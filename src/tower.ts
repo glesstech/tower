@@ -11,7 +11,7 @@
 //                                        └─inside lease──▶ overlay onto trunk, push, landed
 //
 // This class is the router; the logic lives in src/tower/: plans.ts (file, clear, amend,
-// release), landing.ts (check, land, why), trunk.ts (init, teardown, tree), events.ts
+// release), landing.ts (check, land, why), trunk.ts (init, teardown, tree, blob), events.ts
 // (the persisted event log and live feed, stats, dashboard state), schema.ts, and core.ts
 // (shared types and helpers).
 
@@ -22,7 +22,7 @@ import { events, live, state } from "./tower/events";
 import { check, land, why } from "./tower/landing";
 import { amend, file, release, status } from "./tower/plans";
 import { schema } from "./tower/schema";
-import { destroy, init, readToken, tree } from "./tower/trunk";
+import { blob, destroy, init, readToken, tree } from "./tower/trunk";
 
 export class Tower extends DurableObject<Env> implements Core {
 	declare readonly ctx: DurableObjectState<{}>;
@@ -57,7 +57,13 @@ export class Tower extends DurableObject<Env> implements Core {
 				return json(events(this, { since: q.get("since"), plan: q.get("plan"), limit: q.get("limit") }));
 			}
 			if (request.method === "GET" && parts[0] === "tree") return json(await tree(this));
-			if (request.method === "GET" && parts[0] === "why") return json(why(this, url.searchParams.get("path") ?? ""));
+			if (request.method === "GET" && parts[0] === "blob") {
+				const file = await blob(this, url.searchParams.get("path") ?? "");
+				return file ? json(file) : json({ error: "no such file on trunk" }, 404);
+			}
+			if (request.method === "GET" && parts[0] === "why") {
+				return json(why(this, url.searchParams.get("path") ?? "", url.searchParams.get("limit")));
+			}
 			if (parts[0] === "plans") {
 				if (request.method === "POST" && parts.length === 1) return json(await file(this, body), 201);
 				const id = parts[1];

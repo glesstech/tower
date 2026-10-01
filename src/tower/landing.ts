@@ -70,14 +70,16 @@ export async function land(t: Core, id: string, body: { summary?: string; eviden
 	});
 }
 
-// Memory: why does this path look the way it does?
-export function why(t: Core, path: string) {
+// Memory: why does this path look the way it does? The newest 20 lands by default; ?limit= asks
+// for up to 1000 (the code explorer wants a file's whole history).
+export function why(t: Core, path: string, limit?: string | null) {
 	if (!path) throw new Error("path is required");
+	const n = Math.min(Math.max(Number(limit) || 20, 1), 1000);
 	return t.sql
 		.exec<{ sha: string; plan_id: string; agent: string; task: string; summary: string; evidence: string; landed_at: number }>(
 			`SELECT DISTINCT l.* FROM lands l JOIN land_paths p ON p.sha = l.sha
-			 WHERE p.path = ? OR p.path LIKE ? ORDER BY l.landed_at DESC LIMIT 20`,
-			path, `${path.replace(/\/?$/, "/")}%`,
+			 WHERE p.path = ? OR p.path LIKE ? ORDER BY l.landed_at DESC LIMIT ?`,
+			path, `${path.replace(/\/?$/, "/")}%`, n,
 		)
 		.toArray()
 		.map((r) => ({ ...r, evidence: JSON.parse(r.evidence) }));

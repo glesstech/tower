@@ -1,10 +1,12 @@
-// The trunk repo itself: creating it, read tokens for operators, teardown, and the file tree.
+// The trunk repo itself: creating it, read tokens for operators, teardown, the file tree, and
+// file contents.
 
 import { branch, type Core, deleteRepo, repo, serial, setMeta } from "./core";
 import { reset } from "./events";
 import { schema } from "./schema";
 
 const TREE_LIMIT = 5000;
+const BLOB_LIMIT = 1024 * 1024;
 
 export async function init(t: Core, importUrl?: string) {
 	const name = repo(t);
@@ -67,6 +69,32 @@ export async function tree(t: Core) {
 		t.treeCache = { head: head.hash, tree };
 	}
 	return t.treeCache.tree;
+}
+
+// One file's contents on trunk HEAD, for the code explorer. The path is resolved one tree at a
+// time from HEAD's root; a missing path or a directory is null (404). Binary files (a NUL in
+// the first 8 KB) and files over BLOB_LIMIT come back without text.
+export async function blob(t: Core, path: string) {
+	const parts = path.split("/");
+	if (!path || parts.some((p) => !p || p === "." || p === "..")) throw new Error("a repo-relative file path is required");
+	const br = await branch(t);
+	using trunk = await t.env.ARTIFACTS.get(repo(t));
+	const [head] = await trunk.log({ ref: br, limit: 1 });
+	if (!head) return null;
+	let hash = (await trunk.readCommit(head.hash))!.treeHash;
+	for (const [i, name] of parts.entries()) {
+		const entry = (await trunk.readTree(hash))?.find((e) => e.name === name);
+		const last = i === parts.length - 1;
+		if (!entry || entry.type !== (last ? "blob" : "tree")) return null;
+		hash = entry.hash;
+	}
+	const data = await trunk.readBlob(hash);
+	if (!data) return null;
+	const size = data.size;
+	const bytes = new Uint8Array(await data.slice(0, BLOB_LIMIT).arrayBuffer());
+	const binary = bytes.subarray(0, 8192).includes(0);
+	const text = binary || size > BLOB_LIMIT ? null : new TextDecoder().decode(bytes);
+	return { head: head.hash, path, hash, size, binary, text };
 }
 
 async function walk(t: Core, sha: string) {

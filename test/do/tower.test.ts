@@ -374,6 +374,42 @@ describe("dashboard", () => {
 		expect((await t.call("GET", "/tree")).body.paths).toContain("src/c.ts");
 	});
 
+	it("reads a file's contents on trunk HEAD for the code explorer", async () => {
+		const t = await tower();
+		const trunk = t.artifacts.repos.get(REPO)!;
+		const res = await t.call("GET", "/blob?path=src/a.ts");
+		expect(res.status).toBe(200);
+		expect(res.body).toMatchObject({ head: await trunk.head(), path: "src/a.ts", size: 2, binary: false, text: "a\n" });
+
+		await trunk.commit({ ...SEED, "src/a.ts": "a2\n", "img.bin": "\0\x01\x02" }, "change a");
+		expect((await t.call("GET", "/blob?path=src/a.ts")).body.text).toBe("a2\n");
+		expect((await t.call("GET", "/blob?path=img.bin")).body).toMatchObject({ binary: true, text: null });
+
+		expect((await t.call("GET", "/blob?path=src/missing.ts")).status).toBe(404);
+		expect((await t.call("GET", "/blob?path=src")).status).toBe(404);
+		expect((await t.call("GET", "/blob?path=README.md/x")).status).toBe(404);
+		for (const bad of ["", "/src/a.ts", "src/../README.md", "src//a.ts"]) {
+			expect((await t.call("GET", `/blob?path=${encodeURIComponent(bad)}`)).status).toBe(400);
+		}
+	});
+
+	it("returns a path's whole history from /why with ?limit=", async () => {
+		const t = await tower();
+		for (let i = 0; i < 22; i++) {
+			await runInDurableObject(t.stub, (instance: Tower) => {
+				const sql = (instance as any).sql as SqlStorage;
+				const sha = String(i).padStart(40, "0");
+				sql.exec("INSERT INTO lands VALUES (?, ?, 'a', 'task', 'summary', 'null', ?)", sha, `p${i}`, i);
+				sql.exec("INSERT INTO land_paths VALUES (?, 'src/a.ts')", sha);
+			});
+		}
+		expect((await t.call("GET", "/why?path=src/a.ts")).body).toHaveLength(20);
+		const all = (await t.call("GET", "/why?path=src/a.ts&limit=1000")).body as unknown as { plan_id: string }[];
+		expect(all).toHaveLength(22);
+		expect(all[0].plan_id).toBe("p21");
+		expect((await t.call("GET", "/why?path=src/&limit=3")).body).toHaveLength(3);
+	});
+
 	it("includes each land's paths in the state snapshot", async () => {
 		const t = await tower();
 		const a = await t.file("a", ["src/a.ts"]);
