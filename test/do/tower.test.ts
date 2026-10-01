@@ -20,6 +20,7 @@ async function tower(opts: { seed?: boolean } = {}) {
 		const t = instance as any;
 		t.env = { ...t.env, ARTIFACTS: artifacts };
 		t.workspace = {
+			branch: "main",
 			land: async (o: { message: string; changes: { path: string }[] }) => {
 				landed.push({ message: o.message, paths: o.changes.map((c) => c.path) });
 				return LANDED_SHA;
