@@ -19,7 +19,7 @@ Plain Git finds out about conflicts at merge time, after the work is done. With 
           │  land      ─▶ diff fork HEAD vs base (src/treediff.ts, binding readTree)     │
           │               ├─ path outside lease ─▶ 409 drift                             │
           │               └─ inside lease ─▶ overlay onto trunk HEAD + push (src/land.ts)│
-          │  landed / released ─▶ revoke fork tokens, re-clear holding plans             │
+          │  landed / released ─▶ delete the fork, re-clear holding plans                │
           └──────────────────────────────────┬───────────────────────────────────────────┘
                                              ▼
                      Artifacts namespace "tower": demo (trunk), demo--<planId> (forks)
@@ -27,7 +27,7 @@ Plain Git finds out about conflicts at merge time, after the work is done. With 
 
 **Leases.** A claim is a file (`src/auth/session.ts`) or a directory (`src/auth/` or `src/auth/**`). Two claims overlap when one equals or contains the other. A new plan waits behind every cleared plan it overlaps, and behind every earlier holding plan it overlaps, so the queue is FIFO and nothing jumps ahead. Symbol-level claims, from a tree-sitter planning pass, are planned as a finer-grained layer on the same model.
 
-**Isolation.** Every cleared plan gets its own Artifacts fork and short-lived write tokens scoped to that fork. Agents never hold trunk credentials.
+**Isolation.** Every cleared plan gets its own Artifacts fork and short-lived write tokens scoped to that fork. Agents never hold trunk credentials. When the plan lands or is released, the fork is deleted. A landed fork's changes live on trunk, and its name stays in the commit's `Tower-Fork` trailer.
 
 **Drift and the merge gate.** The tower diffs the fork's HEAD tree against the commit it forked from, using only the binding's `readCommit` and `readTree`. It descends only into subtrees whose hash changed. Any changed path outside the lease is drift: `POST …/check` reports it, and `POST …/land` refuses it with a 409. This needs no push-event subscription per fork. (Push events are subscribed per repo, so they're an optional live feed and not part of the core loop.)
 
@@ -42,6 +42,7 @@ All routes are under `/repos/:repo` and require `Authorization: Bearer $TOWER_AP
 | Method | Path | Purpose |
 | --- | --- | --- |
 | POST | `/init` `{importUrl?}` | Create or import trunk. Returns a seeding token. |
+| DELETE | `/` | Tear down a trunk: delete it and any remaining forks, and reset the Tower's state. |
 | POST | `/plans` `{agent, task, claims[]}` | File a flight plan. Returns `holding` or `cleared`, plus fork credentials if cleared. |
 | GET | `/plans/:id` | Poll a plan. Once cleared, returns the fork remote and a fresh fork token. |
 | POST | `/plans/:id/check` | Report touched paths and drift so far. |
@@ -53,18 +54,34 @@ All routes are under `/repos/:repo` and require `Authorization: Bearer $TOWER_AP
 
 ## Running it
 
-Requirements: Node 20+, `git`, a Cloudflare account with Artifacts enabled, and Wrangler logged in with the `artifacts:write` scope (`npx wrangler login`).
+Requirements: Node 20+, `git`, a Cloudflare account on Workers Paid with Artifacts enabled, and Wrangler logged in with the `artifacts:write` scope (`npx wrangler login`).
+
+There are two environments, each with its own Worker, Artifacts namespace and Tower state:
+
+| Environment | Worker | Namespace | Use |
+| --- | --- | --- | --- |
+| `dev` | `tower-dev` | `tower-dev` | Testing and sims; wipe freely. `npm run dev` uses it too. |
+| production | `tower` | `tower` | Demo runs only |
 
 ```sh
 npm install
 cp .dev.vars.example .dev.vars   # set TOWER_API_KEY
-npm run dev                      # Artifacts runs remote even in dev
+npm run dev                      # local Worker; Artifacts is always remote (tower-dev namespace)
 
-# In another terminal: seed trunk, then run 8 agents over 4 modules, one of which drifts
-TOWER_API_KEY=... npm run sim -- --repo demo --seed --agents 8 --modules 4 --drift 1
+# In another terminal: seed a trunk, run 8 agents over 4 modules (one drifts), then tear it all down
+TOWER_API_KEY=... npm run sim -- --repo sim1 --seed --agents 8 --modules 4 --drift 1
 ```
 
-Deploy with `npm run deploy` and `npx wrangler secret put TOWER_API_KEY`.
+With `--seed`, the sim deletes everything it created at the end (trunk, forks, Tower state). Pass `--keep` to inspect the trunk afterwards, and `curl -X DELETE …/repos/<repo>` to remove it later.
+
+Deploy:
+
+```sh
+npm run deploy:dev && npx wrangler secret put TOWER_API_KEY --env dev   # https://tower-dev.<subdomain>.workers.dev
+npm run deploy     && npx wrangler secret put TOWER_API_KEY             # https://tower.<subdomain>.workers.dev
+```
+
+Cost: Artifacts bills operations and storage (Workers Paid includes 10,000 operations and 1 GB per month). Repos persist until deleted, which is why forks and sim trunks are cleaned up automatically.
 
 ## Roadmap
 

@@ -49,6 +49,10 @@ export class Tower extends DurableObject<Env> {
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
+		this.schema();
+	}
+
+	private schema() {
 		this.sql.exec(`
 			CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 			CREATE TABLE IF NOT EXISTS plans (
@@ -77,6 +81,7 @@ export class Tower extends DurableObject<Env> {
 		try {
 			if (request.headers.get("Upgrade") === "websocket") return this.live();
 			if (request.method === "POST" && parts[0] === "init") return json(await this.init(body.importUrl));
+			if (request.method === "DELETE" && parts.length === 0) return json(await this.destroy());
 			if (request.method === "GET" && parts[0] === "state") return json(this.state());
 			if (request.method === "GET" && parts[0] === "why") return json(this.why(url.searchParams.get("path") ?? ""));
 			if (parts[0] === "plans") {
@@ -103,6 +108,23 @@ export class Tower extends DurableObject<Env> {
 			: await this.env.ARTIFACTS.create(name, { setDefaultBranch: "main" });
 		// The initial token lets an operator seed trunk; agents never get trunk write access.
 		return { name: created.name, remote: created.remote, token: created.token };
+	}
+
+	// Tear down a trunk completely: every fork, the trunk repo, and this Tower's own state.
+	private async destroy() {
+		return this.serial(async () => {
+			const forks = this.sql
+				.exec<{ fork: string }>("SELECT fork FROM plans WHERE fork IS NOT NULL")
+				.toArray()
+				.map((r) => r.fork);
+			const repos = [...forks, this.repo()];
+			const deleted = (await Promise.all(repos.map((name) => this.deleteRepo(name)))).filter(Boolean).length;
+			this.broadcast({ type: "reset" });
+			await this.ctx.storage.deleteAll();
+			this.workspace = null;
+			this.schema();
+			return { deleted };
+		});
 	}
 
 	// ── flight plans ─────────────────────────────────────────────────────────
@@ -180,6 +202,8 @@ export class Tower extends DurableObject<Env> {
 			return commit;
 		});
 		this.sql.exec("UPDATE plans SET fork = ?, base = ? WHERE id = ?", name, head.hash, plan.id);
+		// Released while the fork was being made: nobody will land it, so don't leave it behind.
+		if (this.plan(plan.id).status !== "cleared") await this.deleteRepo(name);
 		plan.fork = name;
 		plan.base = head.hash;
 		this.broadcast({ type: "plan", plan: this.plan(plan.id) });
@@ -197,11 +221,9 @@ export class Tower extends DurableObject<Env> {
 	// Free a plan's airspace and clear whichever holding plans no longer have blockers.
 	private async close(plan: Plan, status: "landed" | "released") {
 		this.sql.exec("UPDATE plans SET status = ? WHERE id = ?", status, plan.id);
-		if (plan.fork) {
-			using fork = await this.env.ARTIFACTS.get(plan.fork);
-			const { tokens } = await fork.listTokens();
-			await Promise.all(tokens.filter((t) => t.state === "active").map((t) => fork.revokeToken(t.id)));
-		}
+		// A landed fork's changes now live on trunk (and the commit trailers keep its name),
+		// so the fork and its tokens go away rather than accumulating storage.
+		if (plan.fork) await this.deleteRepo(plan.fork);
 		this.broadcast({ type: "plan", plan: this.plan(plan.id) });
 
 		for (const row of this.sql.exec<PlanRow>("SELECT * FROM plans WHERE status = 'holding' ORDER BY created_at").toArray()) {
@@ -323,6 +345,16 @@ export class Tower extends DurableObject<Env> {
 		const run = this.queue.then(fn, fn);
 		this.queue = run.catch(() => {});
 		return run;
+	}
+
+	// Cleanup is best-effort: a failed delete must never fail the land or release around it.
+	private async deleteRepo(name: string): Promise<boolean> {
+		try {
+			return await this.env.ARTIFACTS.delete(name);
+		} catch (err) {
+			if ((err as ArtifactsError).code !== "NOT_FOUND") console.error(`delete ${name}:`, err);
+			return false;
+		}
 	}
 
 	private plan(id: string): Plan {

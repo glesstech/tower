@@ -1,5 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
+  // Top level is production: the `tower` Worker on the `tower` Artifacts namespace, for demo runs.
   "name": "tower",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
@@ -16,5 +17,16 @@
     "bindings": [{ "name": "TOWER", "class_name": "Tower" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Tower"] }],
-  "observability": { "enabled": true }
+  "observability": { "enabled": true },
+  "env": {
+    // Testing: the `tower-dev` Worker on its own `tower-dev` namespace, safe to wipe at will.
+    // `npm run dev` uses this too, so local runs never touch demo repos or demo Tower state.
+    "dev": {
+      "name": "tower-dev",
+      "artifacts": [{ "binding": "ARTIFACTS", "namespace": "tower-dev", "remote": true }],
+      "durable_objects": {
+        "bindings": [{ "name": "TOWER", "class_name": "Tower" }]
+      }
+    }
+  }
 }

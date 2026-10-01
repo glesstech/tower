@@ -3,6 +3,9 @@
 // clearance, clones its fork with the git CLI, edits only what it claimed, pushes, and lands.
 // Agents share modules on purpose (agents > modules) so the tower has to sequence them.
 //
+// With --seed the sim creates the trunk and tears it down afterwards (trunk, forks, Tower
+// state) unless --keep is passed, so test runs don't leave repos behind.
+//
 //   TOWER_URL=http://localhost:8787 TOWER_API_KEY=... node sim/agents.mjs --repo demo --seed --agents 8 --drift 1
 
 import { execFile } from "node:child_process";
@@ -19,6 +22,7 @@ const { values: args } = parseArgs({
 		modules: { type: "string", default: "4" },
 		drift: { type: "string", default: "0" },
 		seed: { type: "boolean", default: false },
+		keep: { type: "boolean", default: false },
 	},
 });
 const BASE = process.env.TOWER_URL ?? "http://localhost:8787";
@@ -116,6 +120,10 @@ try {
 	for (const r of results) if (r.status === "rejected") console.error(r.reason);
 	const { body } = await api("GET", "/state");
 	console.log("\nstats", body.stats);
+	if (args.seed && !args.keep) {
+		const { body: gone } = await api("DELETE", "");
+		console.log(`cleanup: deleted ${gone.deleted} repos and reset the tower`);
+	}
 } finally {
 	await rm(work, { recursive: true, force: true });
 }
