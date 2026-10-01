@@ -47,7 +47,7 @@ All routes are under `/repos/:repo` and require `Authorization: Bearer $TOWER_AP
 | POST | `/plans` `{agent, task, claims[]}` | File a flight plan. Returns `holding` or `cleared`, plus fork credentials if cleared. |
 | GET | `/plans/:id` | Poll a plan. Once cleared, returns the fork remote and a fresh fork token. |
 | POST | `/plans/:id/check` | Report touched paths and drift so far. |
-| POST | `/plans/:id/amend` `{claims[]}` | Extend an active plan's claims. Not granted while another plan holds an overlapping path. |
+| POST | `/plans/:id/amend` `{claims[]}` | Extend an active plan's claims. Free paths are granted at once; held paths wait (the plan keeps its fork and lease) until their holders land or release. An amendment that would close a wait cycle is refused with 409 `deadlock`. |
 | POST | `/plans/:id/land` `{summary?, evidence?}` | Merge gate: land onto trunk, or 409 with the drifted paths. |
 | POST | `/plans/:id/release` | Abandon a plan and free its airspace. |
 | GET | `/state` | Active plans, recent lands (with their paths), stats. |

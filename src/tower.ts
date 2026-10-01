@@ -4,6 +4,9 @@
 //   plan ──overlap?──▶ holding ──(blocker lands/releases)──▶ cleared ──▶ fork + scoped token
 //                         │                                                │
 //                         └──────────── no overlap ───────────────────────┘
+//   cleared ──amend──▶ new paths free? ──▶ claims extended
+//                        └─held─▶ amendment waits (keeping fork + lease) until its blockers close;
+//                                 one that would close a wait-for cycle is refused (409 deadlock)
 //   cleared ──land──▶ diff fork vs base ──outside lease?──▶ 409 drift (stays cleared)
 //                                        └─inside lease──▶ overlay onto trunk, push, landed
 
@@ -14,6 +17,8 @@ import { type Change, diffTrees } from "./treediff";
 
 type Status = "holding" | "cleared" | "landed" | "released";
 
+type Amendment = { claims: Claim[]; blockedBy: string[]; requestedAt: number };
+
 type Plan = {
 	id: string;
 	agent: string;
@@ -21,6 +26,7 @@ type Plan = {
 	claims: Claim[];
 	status: Status;
 	blockedBy: string[];
+	amendment: Amendment | null;
 	fork: string | null;
 	base: string | null;
 	createdAt: number;
@@ -33,6 +39,7 @@ type PlanRow = {
 	claims: string;
 	status: Status;
 	blocked_by: string;
+	amendment: string | null;
 	fork: string | null;
 	base: string | null;
 	created_at: number;
@@ -71,6 +78,10 @@ export class Tower extends DurableObject<Env> {
 			CREATE INDEX IF NOT EXISTS land_paths_path ON land_paths (path);
 			CREATE TABLE IF NOT EXISTS stats (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
 		`);
+		// Added after plans existed; fails harmlessly once the column is there.
+		try {
+			this.sql.exec("ALTER TABLE plans ADD COLUMN amendment TEXT");
+		} catch {}
 	}
 
 	async fetch(request: Request): Promise<Response> {
@@ -93,7 +104,7 @@ export class Tower extends DurableObject<Env> {
 				const id = parts[1];
 				if (request.method === "GET" && parts.length === 2) return json(await this.status(id));
 				if (request.method === "POST" && parts[2] === "check") return json(await this.check(id));
-				if (request.method === "POST" && parts[2] === "amend") return json(this.amend(id, body.claims));
+				if (request.method === "POST" && parts[2] === "amend") return this.amend(id, body.claims);
 				if (request.method === "POST" && parts[2] === "land") return await this.land(id, body);
 				if (request.method === "POST" && parts[2] === "release") return json(await this.release(id));
 			}
@@ -245,25 +256,77 @@ export class Tower extends DurableObject<Env> {
 		this.broadcast({ type: "plan", plan: this.plan(plan.id) });
 	}
 
-	// Extend an active plan's claims. An in-flight plan gets the new paths only if nobody else
-	// holds them right now; otherwise nothing changes and the caller can retry once the
-	// blockers land. (Queued amendments, with deadlock detection, are a later step.)
-	private amend(id: string, raw?: string[]) {
+	// Extend an active plan's claims. New paths nobody else holds are granted at once. A holding
+	// plan just re-queues with the larger set. An in-flight plan whose new paths are held keeps its
+	// fork and lease while the amendment waits; close() grants it once the blockers land or release.
+	// Only cleared plans block an amendment: holding plans hold nothing yet, and an in-flight agent
+	// going ahead of them is what keeps it from waiting on a plan that waits on it.
+	private amend(id: string, raw?: string[]): Response {
 		if (!raw?.length) throw new Error("claims are required");
 		const plan = this.plan(id);
 		if (plan.status !== "cleared" && plan.status !== "holding") throw new Error(`plan ${id} is ${plan.status}`);
-		const claims = [...plan.claims];
-		for (const c of raw.map(parseClaim)) if (!claims.some((x) => x.path === c.path)) claims.push(c);
-		const blockedBy = this.blockers(claims, plan.createdAt, id);
+		const added = merge([], raw.map(parseClaim)).filter((c) => !within(plan.claims, c));
+		if (!added.length) return json({ granted: true, blockedBy: [], plan });
 
-		if (plan.status === "cleared" && blockedBy.length) return { granted: false, blockedBy, plan };
-		const status: Status = blockedBy.length ? "holding" : "cleared";
-		this.sql.exec(
-			"UPDATE plans SET claims = ?, status = ?, blocked_by = ? WHERE id = ?",
-			JSON.stringify(claims), status, JSON.stringify(blockedBy), id,
-		);
+		if (plan.status === "holding") {
+			const claims = [...plan.claims, ...added];
+			const blockedBy = this.blockers(claims, plan.createdAt, id);
+			const status: Status = blockedBy.length ? "holding" : "cleared";
+			this.sql.exec(
+				"UPDATE plans SET claims = ?, status = ?, blocked_by = ? WHERE id = ?",
+				JSON.stringify(claims), status, JSON.stringify(blockedBy), id,
+			);
+			this.broadcast({ type: "plan", plan: this.plan(id) });
+			return json({ granted: true, blockedBy, plan: this.plan(id) });
+		}
+
+		if (!this.blockers(added, 0, id).length) {
+			this.sql.exec("UPDATE plans SET claims = ? WHERE id = ?", JSON.stringify([...plan.claims, ...added]), id);
+			this.broadcast({ type: "plan", plan: this.plan(id) });
+			return json({ granted: true, blockedBy: [], plan: this.plan(id) });
+		}
+
+		// Held: fold into any amendment already waiting, then make sure waiting on these blockers
+		// can't close a cycle (A holds X and wants Y while B holds Y and wants X). If it would,
+		// refuse this amendment; both plans keep their leases and forks.
+		const claims = merge(plan.amendment?.claims ?? [], added);
+		const blockedBy = this.blockers(claims, 0, id);
+		const cycle = this.cycle(id, blockedBy);
+		if (cycle) {
+			this.bump("deadlocks_prevented");
+			const error = `deadlock: ${cycle.join(" -> ")}; finish without these paths, or land or release first`;
+			return json({ granted: false, error, deadlock: cycle, blockedBy, plan }, 409);
+		}
+		const amendment: Amendment = { claims, blockedBy, requestedAt: plan.amendment?.requestedAt ?? Date.now() };
+		this.sql.exec("UPDATE plans SET amendment = ? WHERE id = ?", JSON.stringify(amendment), id);
+		// Agents poll by asking again; count an amendment once, not once per poll.
+		if (claims.length > (plan.amendment?.claims.length ?? 0)) this.bump("amendments_held");
 		this.broadcast({ type: "plan", plan: this.plan(id) });
-		return { granted: true, blockedBy, plan: this.plan(id) };
+		return json({ granted: false, held: true, blockedBy, plan: this.plan(id) });
+	}
+
+	// The wait-for path from `self` through held amendments back to `self`, if there is one.
+	private cycle(self: string, blockedBy: string[]): string[] | null {
+		const seen = new Set<string>();
+		const walk = (path: string[]): string[] | null => {
+			const id = path[path.length - 1];
+			if (id === self) return path;
+			if (seen.has(id)) return null;
+			seen.add(id);
+			// Edges are recomputed, not read from the stored blockedBy: a plan filed since may
+			// have taken some of the held paths.
+			const held = this.plan(id).amendment;
+			for (const next of held ? this.blockers(held.claims, 0, id) : []) {
+				const found = walk([...path, next]);
+				if (found) return found;
+			}
+			return null;
+		};
+		for (const b of blockedBy) {
+			const found = walk([self, b]);
+			if (found) return found;
+		}
+		return null;
 	}
 
 	private async release(id: string) {
@@ -275,13 +338,32 @@ export class Tower extends DurableObject<Env> {
 		});
 	}
 
-	// Free a plan's airspace and clear whichever holding plans no longer have blockers.
+	// Free a plan's airspace, then grant held amendments (in-flight agents first, oldest request
+	// first) and clear whichever holding plans no longer have blockers.
 	private async close(plan: Plan, status: "landed" | "released") {
-		this.sql.exec("UPDATE plans SET status = ? WHERE id = ?", status, plan.id);
+		this.sql.exec("UPDATE plans SET status = ?, amendment = NULL WHERE id = ?", status, plan.id);
 		// A landed fork's changes now live on trunk (and the commit trailers keep its name),
 		// so the fork and its tokens go away rather than accumulating storage.
 		if (plan.fork) await this.deleteRepo(plan.fork);
 		this.broadcast({ type: "plan", plan: this.plan(plan.id) });
+
+		const amending = this.sql
+			.exec<PlanRow>("SELECT * FROM plans WHERE status = 'cleared' AND amendment IS NOT NULL")
+			.toArray()
+			.map(toPlan)
+			.sort((a, b) => a.amendment!.requestedAt - b.amendment!.requestedAt);
+		for (const { id } of amending) {
+			const p = this.plan(id); // re-read: an earlier grant in this loop may now block it
+			if (p.status !== "cleared" || !p.amendment) continue;
+			const blockedBy = this.blockers(p.amendment.claims, 0, id);
+			if (blockedBy.length) {
+				this.sql.exec("UPDATE plans SET amendment = ? WHERE id = ?", JSON.stringify({ ...p.amendment, blockedBy }), id);
+				continue;
+			}
+			const claims = merge(p.claims, p.amendment.claims);
+			this.sql.exec("UPDATE plans SET claims = ?, amendment = NULL WHERE id = ?", JSON.stringify(claims), id);
+			this.broadcast({ type: "plan", plan: this.plan(id) });
+		}
 
 		for (const row of this.sql.exec<PlanRow>("SELECT * FROM plans WHERE status = 'holding' ORDER BY created_at").toArray()) {
 			const blockedBy = this.blockers(JSON.parse(row.claims), row.created_at, row.id);
@@ -491,10 +573,22 @@ function toPlan(r: PlanRow): Plan {
 		claims: JSON.parse(r.claims),
 		status: r.status,
 		blockedBy: JSON.parse(r.blocked_by),
+		amendment: r.amendment ? JSON.parse(r.amendment) : null,
 		fork: r.fork,
 		base: r.base,
 		createdAt: r.created_at,
 	};
+}
+
+// Whether a claim is already inside one of `claims` (same path, or under a claimed directory).
+function within(claims: Claim[], c: Claim): boolean {
+	return claims.some((x) => x.path === c.path || (x.dir && c.path.startsWith(x.path)));
+}
+
+function merge(claims: Claim[], extra: Claim[]): Claim[] {
+	const out = [...claims];
+	for (const c of extra) if (!within(out, c)) out.push(c);
+	return out;
 }
 
 function json(data: unknown, status = 200): Response {
