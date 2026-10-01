@@ -1,0 +1,24 @@
+/* Shared by every page in web/: the dark palette, base type, and the top nav. */
+
+:root {
+	--bg: #0d1117;
+	--panel: #161b22;
+	--line: #30363d;
+	--text: #e6edf3;
+	--dim: #8b949e;
+	--red: #f85149;
+	--green: #3fb950;
+	--mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px/1.4 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+body { display: flex; flex-direction: column; }
+a { color: inherit; }
+code { font: 11px var(--mono); }
+
+.topnav { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.topnav .brand { font-size: 14px; font-weight: 600; margin-right: 4px; }
+.topnav .repo { color: var(--dim); margin-right: 16px; }
+.topnav a { color: var(--dim); text-decoration: none; padding: 3px 10px; border-radius: 6px; }
+.topnav a:hover { color: var(--text); background: rgba(255,255,255,.05); }
+.topnav a.active { color: var(--text); background: var(--line); }

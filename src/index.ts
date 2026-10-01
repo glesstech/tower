@@ -1,12 +1,13 @@
 // Routes /repos/:repo/* to that repo's Tower, and /repos/:repo/mcp to the same Tower as MCP
 // tools. Every route issues or reveals repo access, so all of them require the operator key
 // (WebSocket clients may pass it as ?key=). The read-only dashboard key, if set, may only
-// watch (see src/dashboard/access.ts). /repos/:repo/dashboard is a static page with no data
-// of its own, so it is served without a key; it connects with the ?key= from its own URL.
+// watch (see src/dashboard/access.ts). UI pages such as /repos/:repo/dashboard are static
+// assets from web/ with no data of its own, so they are served without a key; they call the
+// API with the ?key= from their own URL (see src/dashboard/pages.ts).
 
 import { createMcpHandler } from "agents/mcp/server";
 import { access } from "./dashboard/access";
-import { dashboardPage } from "./dashboard/page";
+import { pageAsset } from "./dashboard/pages";
 import { createServer } from "./mcp";
 
 export { Tower } from "./tower";
@@ -18,12 +19,14 @@ export default {
 		if (!match) return Response.json({ error: "use /repos/:repo/..." }, { status: 404 });
 
 		const [, repo, rest = "/"] = match;
-		if (request.method === "GET" && rest === "/dashboard") {
-			return new Response(dashboardPage(repo), { headers: { "Content-Type": "text/html; charset=utf-8" } });
+		const websocket = request.headers.get("Upgrade") === "websocket";
+		const page = pageAsset({ method: request.method, rest, websocket });
+		if (page) {
+			const asset = await env.ASSETS.fetch(new Request(new URL(page, url.origin), request));
+			if (asset.status !== 404) return asset;
 		}
 
 		const key = request.headers.get("Authorization")?.replace(/^Bearer /, "") ?? url.searchParams.get("key");
-		const websocket = request.headers.get("Upgrade") === "websocket";
 		const keys = { operator: env.TOWER_API_KEY, dashboard: env.TOWER_DASHBOARD_KEY };
 		if (!access(keys, key, { method: request.method, rest, websocket })) {
 			return Response.json({ error: "unauthorized" }, { status: 401 });

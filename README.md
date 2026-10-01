@@ -54,11 +54,13 @@ All routes are under `/repos/:repo` and require `Authorization: Bearer $TOWER_AP
 | GET | `/tree` | Every file path on trunk HEAD, for the dashboard's codebase map. Cached until HEAD moves. |
 | GET | `/why?path=` | Landed changes (with evidence) that touched a path. |
 | GET | `/live` (WebSocket) | A `state` snapshot on connect, then live plan, drift, land and stat events. |
-| GET | `/dashboard?key=` | The live dashboard page (no key needed to load it; it connects with its `?key=`). |
+| GET | `/<page>?key=` | A UI page from `web/`, such as `/dashboard` (no key needed to load it; it calls the API with its `?key=`). |
 
 ## Dashboard
 
 Open `https://tower-dev.<subdomain>.workers.dev/repos/<repo>/dashboard?key=$TOWER_DASHBOARD_KEY`. Trunk is drawn as a treemap. Each in-flight agent is a colored dot over a tinted region covering its claims. Holding plans get a dashed outline and are listed with the agents they wait on. Drift flashes red on the offending paths, and each land flashes green and streams into the trunk timeline. The header counts conflicts prevented, drift blocked and landed. Set the key with `npx wrangler secret put TOWER_DASHBOARD_KEY [--env dev]`; the operator key works too.
+
+The UI lives in `web/` and is served with Workers Static Assets: plain HTML, CSS and ES modules, with no build step. `web/styles.css` holds the palette and the top nav's styles. `web/client.js` holds the nav entries and the shared helpers: `api(path)` and `live(onEvent)`, both using the page's `?key=`, plus `el()`, `color()` and `ago()`. To add a page, add `web/<page>.html` and a nav entry in `web/client.js`. It is then served at `/repos/:repo/<page>`. `npm run typecheck` also checks `web/` through JSDoc types (`web/tsconfig.json`).
 
 ## Agents: MCP
 

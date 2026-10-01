@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tower · live</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="/dashboard.css">
+<script type="module" src="/dashboard.js"></script>
+</head>
+<body>
+<main class="dashboard">
+	<header>
+		<h1>tower <small id="repo"></small></h1>
+		<span id="conn">connecting</span>
+		<div class="counters">
+			<div class="counter" id="c-conflicts_prevented"><b>0</b><span>conflicts prevented</span></div>
+			<div class="counter" id="c-drift_blocked"><b>0</b><span>drift blocked</span></div>
+			<div class="counter" id="c-landed"><b>0</b><span>landed</span></div>
+		</div>
+	</header>
+	<div id="map"><div id="tree"></div><div id="overlay"></div><div id="empty">waiting for trunk…</div></div>
+	<aside>
+		<section id="flying"><h2>In flight</h2><div></div></section>
+		<section id="holding"><h2>Holding</h2><div></div></section>
+		<section id="log"><h2>Events</h2><div></div></section>
+	</aside>
+	<div id="timeline"><h2>Trunk</h2><div id="trunk"></div></div>
+</main>
+</body>
+</html>

@@ -1,0 +1,2 @@
+# Not served: build config for `npm run typecheck`.
+tsconfig.json

@@ -3,6 +3,7 @@
 // Runtime types generated with workerd@1.20260930.2 2026-10-01 nodejs_compat
 interface __BaseEnv_Env {
 	ARTIFACTS: Artifacts;
+	ASSETS: Fetcher;
 	TOWER_API_KEY: string;
 	TOWER_DASHBOARD_KEY?: string;
 	TOWER: DurableObjectNamespace<import("./src/index").Tower>;
@@ -14,6 +15,7 @@ declare namespace Cloudflare {
 	}
 	interface DevEnv {
 		ARTIFACTS: Artifacts;
+		ASSETS: Fetcher;
 		TOWER_API_KEY: string;
 		TOWER_DASHBOARD_KEY?: string;
 		TOWER: DurableObjectNamespace<import("./src/index").Tower>;
