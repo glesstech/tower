@@ -118,12 +118,8 @@ export function $(/** @type {string} */ id) {
 	return e;
 }
 
-/** A stable color per agent name. */
-export function color(/** @type {string} */ agent) {
-	let h = 0;
-	for (let i = 0; i < agent.length; i++) h = (h * 31 + agent.charCodeAt(i)) >>> 0;
-	return "hsl(" + (h % 360) + ", 80%, 62%)";
-}
+/** A color per agent, stable for the session: see web/model.js. */
+export { color } from "./model.js";
 
 /** "just now", "5m ago", "3h ago", "2d ago" for a timestamp in ms. */
 export function ago(/** @type {number} */ at, now = Date.now()) {
