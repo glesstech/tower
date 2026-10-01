@@ -8,15 +8,16 @@ When asked to work on more than one issue or task (for example "work on issues 1
 
 ```sh
 TOWER_URL=https://tower-dev.g12r.workers.dev TOWER_API_KEY=$(cut -d= -f2 .dev.vars) \
-  npm run swarm -- --repo tower-src --init --issues 11,12,14
+  npm run swarm -- --repo tower-src --init --pr --issues 11,12,14
 ```
 
 - `--issues` takes GitHub issue numbers; `--task "…"` adds free-text tasks (repeatable).
-- `--init` creates the `tower-src` trunk from this checkout's HEAD the first time; after that it's reused.
+- `--init` creates the `tower-src` trunk from this checkout's HEAD.
+- `--pr` fetches what landed into a `swarm/<timestamp>` branch, pushes it, opens a PR (with each agent's evidence, and `Closes #N` for landed issues), then tears the trunk down so the next run starts fresh from `main`. Always use `--init --pr` together.
 - Agents come from `swarm/agents.json` and are dealt out round-robin; `--agent <name>` uses just one.
 - Use `tower-dev` (above) for anything experimental. Use the production URL only for recorded demo runs.
 
-When it finishes, report the summary table (what landed, what didn't) and where the logs are (`swarm-logs/`).
+When it finishes, report the summary table (what landed, what didn't), the PR link, and where the logs are (`swarm-logs/`).
 
 **If you are a swarm agent** (your prompt says you are one of several agents coordinating through the tower MCP tools), never run the swarm. Do your one task and follow the tower server's instructions.
 

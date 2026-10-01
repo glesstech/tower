@@ -82,6 +82,7 @@ export class Tower extends DurableObject<Env> {
 			if (request.headers.get("Upgrade") === "websocket") return this.live();
 			if (request.method === "POST" && parts[0] === "init") return json(await this.init(body.importUrl));
 			if (request.method === "DELETE" && parts.length === 0) return json(await this.destroy());
+			if (request.method === "POST" && parts[0] === "token") return json(await this.readToken());
 			if (request.method === "GET" && parts[0] === "state") return json(this.state());
 			if (request.method === "GET" && parts[0] === "why") return json(this.why(url.searchParams.get("path") ?? ""));
 			if (parts[0] === "plans") {
@@ -109,6 +110,13 @@ export class Tower extends DurableObject<Env> {
 			: await this.env.ARTIFACTS.create(name, { setDefaultBranch: "main" });
 		// The initial token lets an operator seed trunk; agents never get trunk write access.
 		return { name: created.name, remote: created.remote, token: created.token };
+	}
+
+	// A short-lived, read-only trunk token, so an operator can fetch landed work (e.g. into a PR).
+	private async readToken() {
+		using trunk = await this.env.ARTIFACTS.get(this.repo());
+		const [info, token] = await Promise.all([trunk.info(), trunk.createToken("read", 600)]);
+		return { remote: info.remote, token: token.plaintext, expiresAt: token.expiresAt };
 	}
 
 	// Tear down a trunk completely: every fork, the trunk repo, and this Tower's own state.
@@ -338,7 +346,10 @@ export class Tower extends DurableObject<Env> {
 			.exec<PlanRow>(`SELECT * FROM plans WHERE status IN ${ACTIVE} ORDER BY created_at`)
 			.toArray()
 			.map(toPlan);
-		const lands = this.sql.exec("SELECT sha, plan_id, agent, summary, landed_at FROM lands ORDER BY landed_at DESC LIMIT 50").toArray();
+		const lands = this.sql
+			.exec<{ evidence: string }>("SELECT sha, plan_id, agent, task, summary, evidence, landed_at FROM lands ORDER BY landed_at DESC LIMIT 50")
+			.toArray()
+			.map((r) => ({ ...r, evidence: JSON.parse(r.evidence) }));
 		const stats = Object.fromEntries(this.sql.exec<{ key: string; value: number }>("SELECT * FROM stats").toArray().map((r) => [r.key, r.value]));
 		return { repo: this.getMeta("repo"), plans, lands, stats };
 	}

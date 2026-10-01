@@ -7,6 +7,8 @@
 //     npm run swarm -- --repo tower-src --issues 11,12 --task "Fix the typo in README.md"
 //
 // --init creates the trunk from the current directory's HEAD if it doesn't exist yet.
+// --pr fetches what landed into a local swarm/<timestamp> branch, pushes it, opens a GitHub PR
+// with each agent's evidence, then tears the trunk down so the next run starts from main.
 
 import { execFile, spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
@@ -26,6 +28,7 @@ const { values: args } = parseArgs({
 		timeout: { type: "string", default: "30" },
 		logs: { type: "string", default: "swarm-logs" },
 		init: { type: "boolean", default: false },
+		pr: { type: "boolean", default: false },
 		"dry-run": { type: "boolean", default: false },
 	},
 });
@@ -51,7 +54,7 @@ async function tasks() {
 	for (const n of args.issues.split(",").map((s) => s.trim()).filter(Boolean)) {
 		const { stdout } = await run("gh", ["issue", "view", n, "--json", "number,title,body"]);
 		const issue = JSON.parse(stdout);
-		out.push({ id: `issue-${issue.number}`, text: `GitHub issue #${issue.number}: ${issue.title}\n\n${issue.body}` });
+		out.push({ id: `issue-${issue.number}`, issue: issue.number, text: `GitHub issue #${issue.number}: ${issue.title}\n\n${issue.body}` });
 	}
 	args.task.forEach((text, i) => out.push({ id: `task-${i + 1}`, text }));
 	if (!out.length) throw new Error("give --issues and/or --task");
@@ -150,3 +153,62 @@ for (const [i, w] of work.entries()) {
 	console.log(`${w.name.padEnd(24)} exit ${String(codes[i]).padEnd(3)} ${outcome}`);
 }
 console.log(`\nstats ${JSON.stringify(state.stats)}  ·  logs in ${args.logs}/`);
+if (args.pr) await openPr(state, codes);
+
+async function openPr(state, codes) {
+	const landed = state.lands.filter((l) => work.some((w) => w.name === l.agent)).reverse();
+	if (!landed.length) {
+		log("swarm", "nothing landed; no PR");
+		return teardown();
+	}
+	const stamp = new Date().toISOString().slice(0, 16).replace("T", "-").replace(":", "");
+	const branch = `swarm/${stamp}`;
+	const { body: t } = await api("POST", "/token");
+	await run("git", ["-c", `http.extraHeader=Authorization: Bearer ${t.token}`, "fetch", "-q", t.remote, `main:${branch}`]);
+	log("swarm", `fetched trunk into ${branch}`);
+	// Everything landed is now in the local branch, so the trunk can go even if the PR step fails.
+	await teardown();
+
+	const issues = work.filter((w) => w.task.issue && landed.some((l) => l.agent === w.name)).map((w) => w.task.issue);
+	const title = `Swarm: ${landed.length} change${landed.length === 1 ? "" : "s"}${issues.length ? ` (${issues.map((n) => `#${n}`).join(", ")})` : ""}`;
+	const missed = work
+		.map((w, i) => ({ w, code: codes[i] }))
+		.filter(({ w }) => !landed.some((l) => l.agent === w.name))
+		.map(({ w, code }) => `- \`${w.name}\` (exit ${code}): ${w.task.text.split("\n")[0]}`);
+	const body = [
+		`Changes landed by ${work.length} agents coordinating through tower on trunk \`${args.repo}\`. Each commit carries \`Tower-*\` trailers.`,
+		"",
+		"| Agent | Commit | Summary |",
+		"| --- | --- | --- |",
+		...landed.map((l) => `| \`${l.agent}\` | ${l.sha.slice(0, 8)} | ${l.summary} |`),
+		"",
+		"## Evidence",
+		...landed.flatMap((l) => [
+			"",
+			`### \`${l.agent}\`: ${l.summary}`,
+			...Object.entries(l.evidence ?? {}).map(([k, v]) => `- **${k}:** ${typeof v === "string" ? v : JSON.stringify(v)}`),
+		]),
+		...(missed.length ? ["", "## Did not land", ...missed] : []),
+		"",
+		`Stats: ${JSON.stringify(state.stats)}`,
+		"",
+		...issues.map((n) => `Closes #${n}`),
+	].join("\n");
+
+	try {
+		await run("git", ["push", "-q", "-u", "origin", branch]);
+		const dir = await mkdtemp(join(tmpdir(), "swarm-pr-"));
+		await writeFile(join(dir, "body.md"), body);
+		const { stdout: base } = await run("gh", ["repo", "view", "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"]);
+		const { stdout: url } = await run("gh", ["pr", "create", "--base", base.trim(), "--head", branch, "--title", title, "--body-file", join(dir, "body.md")]);
+		await rm(dir, { recursive: true, force: true });
+		log("swarm", `opened ${url.trim()}`);
+	} catch (err) {
+		log("swarm", `PR step failed (${err.message.split("\n")[0]}); the work is in local branch ${branch}`);
+	}
+}
+
+async function teardown() {
+	const { body } = await api("DELETE", "");
+	log("swarm", `tore down trunk ${args.repo} (${body.deleted} repos)`);
+}

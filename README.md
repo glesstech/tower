@@ -42,6 +42,7 @@ All routes are under `/repos/:repo` and require `Authorization: Bearer $TOWER_AP
 | Method | Path | Purpose |
 | --- | --- | --- |
 | POST | `/init` `{importUrl?}` | Create or import trunk. Returns a seeding token. |
+| POST | `/token` | A read-only trunk token (10 minutes) for fetching landed work. |
 | DELETE | `/` | Tear down a trunk: delete it and any remaining forks, and reset the Tower's state. |
 | POST | `/plans` `{agent, task, claims[]}` | File a flight plan. Returns `holding` or `cleared`, plus fork credentials if cleared. |
 | GET | `/plans/:id` | Poll a plan. Once cleared, returns the fork remote and a fresh fork token. |
@@ -77,10 +78,10 @@ Tested with Claude Code (Haiku) and opencode (Gemini 3.5 Flash) running concurre
 
 ```sh
 TOWER_URL=https://tower-dev.<subdomain>.workers.dev TOWER_API_KEY=... \
-  npm run swarm -- --repo tower-src --init --issues 11,12 --task "Fix the typo in README.md"
+  npm run swarm -- --repo tower-src --init --pr --issues 11,12 --task "Fix the typo in README.md"
 ```
 
-`--init` creates the trunk from the current directory's HEAD. `--dry-run` prints the agent commands without running anything. `AGENTS.md` tells an agent working in this repo to dispatch multi-issue requests to the swarm.
+`--init` creates the trunk from the current directory's HEAD. `--pr` fetches what landed into a `swarm/<timestamp>` branch, opens a GitHub PR with each agent's evidence (and `Closes #N` for landed issues), then tears the trunk down, so each run starts fresh from `main`. `--dry-run` prints the agent commands without running anything. `AGENTS.md` tells an agent working in this repo to dispatch multi-issue requests to the swarm.
 
 ## Running it
 
