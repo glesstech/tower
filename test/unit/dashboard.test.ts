@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { access } from "../../src/dashboard/access";
-import { dashboardPage } from "../../src/dashboard/page";
+import { pageAsset } from "../../src/dashboard/pages";
 
 const keys = { operator: "op", dashboard: "view" };
 const get = (rest: string, websocket = false) => ({ method: "GET", rest, websocket });
@@ -41,11 +41,25 @@ describe("access", () => {
 	});
 });
 
-describe("dashboardPage", () => {
-	it("embeds the repo and subscribes to the live feed", () => {
-		const html = dashboardPage("tower-src");
-		expect(html).toContain('var REPO = "tower-src";');
-		expect(html).toContain('"/live?key="');
-		expect(html).not.toContain("__REPO__");
+describe("pageAsset", () => {
+	it("serves GET /<name> as the web/<name>.html asset", () => {
+		expect(pageAsset(get("/dashboard"))).toBe("/dashboard");
+		expect(pageAsset(get("/plans"))).toBe("/plans");
+		expect(pageAsset(get("/code-explorer"))).toBe("/code-explorer");
+	});
+
+	it("never shadows the API", () => {
+		for (const rest of ["/state", "/tree", "/why", "/live", "/mcp"]) expect(pageAsset(get(rest))).toBeNull();
+		expect(pageAsset(get("/dashboard", true))).toBeNull();
+		expect(pageAsset({ method: "POST", rest: "/plans", websocket: false })).toBeNull();
+		expect(pageAsset({ method: "DELETE", rest: "/", websocket: false })).toBeNull();
+		expect(pageAsset(get("/plans/abc"))).toBeNull();
+		expect(pageAsset(get("/"))).toBeNull();
+	});
+
+	it("only maps plain page names", () => {
+		expect(pageAsset(get("/client.js"))).toBeNull();
+		expect(pageAsset(get("/../secret"))).toBeNull();
+		expect(pageAsset(get("/Dashboard"))).toBeNull();
 	});
 });

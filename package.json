@@ -9,7 +9,7 @@
     "deploy": "wrangler deploy",
     "deploy:dev": "wrangler deploy --env dev",
     "types": "wrangler types",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p web",
     "test": "vitest run",
     "test:integration": "node scripts/integration.mjs",
     "sim": "node sim/agents.mjs",

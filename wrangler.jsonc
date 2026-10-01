@@ -5,6 +5,9 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
+  // The UI: web/ is served as static assets; the Worker serves its pages at /repos/:repo/<page>
+  // through the ASSETS binding (see src/dashboard/pages.ts).
+  "assets": { "directory": "./web", "binding": "ASSETS" },
   "artifacts": [
     {
       "binding": "ARTIFACTS",
