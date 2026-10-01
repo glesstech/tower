@@ -233,3 +233,32 @@ describe("fork provisioning", () => {
 		expect(t.artifacts.repos.size).toBe(0);
 	});
 });
+
+describe("dashboard", () => {
+	it("lists trunk's files for the codebase map, walking the tree only when HEAD moves", async () => {
+		const t = await tower();
+		const trunk = t.artifacts.repos.get(REPO)!;
+		let reads = 0;
+		const readTree = trunk.readTree.bind(trunk);
+		trunk.readTree = (hash: string) => (reads++, readTree(hash));
+
+		const first = await t.call("GET", "/tree");
+		expect(first.body).toEqual({ head: await trunk.head(), paths: ["README.md", "docs/guide.md", "src/a.ts", "src/b.ts"], truncated: false });
+		const walked = reads;
+		await t.call("GET", "/tree");
+		expect(reads).toBe(walked);
+
+		await trunk.commit({ ...SEED, "src/c.ts": "c\n" }, "add c");
+		expect((await t.call("GET", "/tree")).body.paths).toContain("src/c.ts");
+	});
+
+	it("includes each land's paths in the state snapshot", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/a.ts"]);
+		await t.push(a.plan.id, { ...SEED, "src/a.ts": "a2\n" });
+		await t.call("POST", `/plans/${a.plan.id}/land`, { summary: "change a" });
+		const state = (await t.call("GET", "/state")).body;
+		expect(state.lands).toEqual([expect.objectContaining({ sha: LANDED_SHA, agent: "a", paths: ["src/a.ts"] })]);
+		expect(state.stats.landed).toBe(1);
+	});
+});

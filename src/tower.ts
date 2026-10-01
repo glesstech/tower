@@ -40,12 +40,14 @@ type PlanRow = {
 
 const ACTIVE = "('holding', 'cleared')";
 const TOKEN_TTL = 3600;
+const TREE_LIMIT = 5000;
 
 export class Tower extends DurableObject<Env> {
 	private sql = this.ctx.storage.sql;
 	private queue: Promise<unknown> = Promise.resolve();
 	private workspace: TrunkWorkspace | null = null;
 	private provisioning = new Map<string, Promise<void>>();
+	private treeCache: { head: string; tree: Promise<{ head: string; paths: string[]; truncated: boolean }> } | null = null;
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
@@ -84,6 +86,7 @@ export class Tower extends DurableObject<Env> {
 			if (request.method === "DELETE" && parts.length === 0) return json(await this.destroy());
 			if (request.method === "POST" && parts[0] === "token") return json(await this.readToken());
 			if (request.method === "GET" && parts[0] === "state") return json(this.state());
+			if (request.method === "GET" && parts[0] === "tree") return json(await this.tree());
 			if (request.method === "GET" && parts[0] === "why") return json(this.why(url.searchParams.get("path") ?? ""));
 			if (parts[0] === "plans") {
 				if (request.method === "POST" && parts.length === 1) return json(await this.file(body), 201);
@@ -347,7 +350,7 @@ export class Tower extends DurableObject<Env> {
 			for (const c of changes) this.sql.exec("INSERT INTO land_paths (sha, path) VALUES (?, ?)", sha, c.path);
 			this.bump("landed");
 			await this.close(plan, "landed");
-			this.broadcast({ type: "land", sha, planId: plan.id, paths: changes.map((c) => c.path) });
+			this.broadcast({ type: "land", sha, planId: plan.id, agent: plan.agent, summary, paths: changes.map((c) => c.path) });
 			return json({ sha, paths: changes.map((c) => c.path) });
 		});
 	}
@@ -374,11 +377,48 @@ export class Tower extends DurableObject<Env> {
 			.toArray()
 			.map(toPlan);
 		const lands = this.sql
-			.exec<{ evidence: string }>("SELECT sha, plan_id, agent, task, summary, evidence, landed_at FROM lands ORDER BY landed_at DESC LIMIT 50")
+			.exec<{ sha: string; evidence: string }>("SELECT sha, plan_id, agent, task, summary, evidence, landed_at FROM lands ORDER BY landed_at DESC LIMIT 50")
 			.toArray()
-			.map((r) => ({ ...r, evidence: JSON.parse(r.evidence) }));
+			.map((r) => ({ ...r, evidence: JSON.parse(r.evidence), paths: this.landPaths(r.sha) }));
 		const stats = Object.fromEntries(this.sql.exec<{ key: string; value: number }>("SELECT * FROM stats").toArray().map((r) => [r.key, r.value]));
 		return { repo: this.getMeta("repo"), plans, lands, stats };
+	}
+
+	private landPaths(sha: string): string[] {
+		return this.sql.exec<{ path: string }>("SELECT path FROM land_paths WHERE sha = ?", sha).toArray().map((r) => r.path);
+	}
+
+	// Every file path on trunk HEAD, for the dashboard's codebase map. Walking the tree costs
+	// one readTree per directory, so the result is cached until trunk HEAD moves.
+	private async tree() {
+		const branch = await this.branch();
+		using trunk = await this.env.ARTIFACTS.get(this.repo());
+		const [head] = await trunk.log({ ref: branch, limit: 1 });
+		if (!head) return { head: null, paths: [], truncated: false };
+		if (this.treeCache?.head !== head.hash) {
+			const tree = this.walk(head.hash).catch((err) => {
+				this.treeCache = null;
+				throw err;
+			});
+			this.treeCache = { head: head.hash, tree };
+		}
+		return this.treeCache.tree;
+	}
+
+	private async walk(sha: string) {
+		using trunk = await this.env.ARTIFACTS.get(this.repo());
+		const commit = await trunk.readCommit(sha);
+		const paths: string[] = [];
+		const dirs: [string, string][] = [["", commit!.treeHash]];
+		while (dirs.length && paths.length < TREE_LIMIT) {
+			const [prefix, hash] = dirs.shift()!;
+			for (const e of (await trunk.readTree(hash)) ?? []) {
+				if (e.type === "tree") dirs.push([`${prefix}${e.name}/`, e.hash]);
+				else paths.push(prefix + e.name);
+			}
+		}
+		const truncated = dirs.length > 0 || paths.length > TREE_LIMIT;
+		return { head: sha, paths: paths.slice(0, TREE_LIMIT).sort(), truncated };
 	}
 
 	private live(): Response {

@@ -4,6 +4,7 @@
 interface __BaseEnv_Env {
 	ARTIFACTS: Artifacts;
 	TOWER_API_KEY: string;
+	TOWER_DASHBOARD_KEY?: string;
 	TOWER: DurableObjectNamespace<import("./src/index").Tower>;
 }
 declare namespace Cloudflare {
@@ -14,6 +15,7 @@ declare namespace Cloudflare {
 	interface DevEnv {
 		ARTIFACTS: Artifacts;
 		TOWER_API_KEY: string;
+		TOWER_DASHBOARD_KEY?: string;
 		TOWER: DurableObjectNamespace<import("./src/index").Tower>;
 	}
 	interface Env extends __BaseEnv_Env {}
