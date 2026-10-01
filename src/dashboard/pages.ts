@@ -5,7 +5,7 @@
 // Names the Tower answers to GET are never pages, so a stray web/state.html cannot shadow the
 // API. Any other name that has no asset falls through to auth and the Tower.
 
-const API_READS = new Set(["state", "tree", "why", "live", "mcp"]);
+const API_READS = new Set(["state", "events", "tree", "why", "live", "mcp"]);
 
 export function pageAsset(req: { method: string; rest: string; websocket: boolean }): string | null {
 	if (req.method !== "GET" || req.websocket) return null;

@@ -54,27 +54,31 @@ function handle(ev) {
 		renderCounters();
 		renderTimeline();
 		loadTree();
-	} else if (ev.type === "plan") {
-		/** @type {Plan} */
-		const plan = ev.plan;
-		plans[plan.id] = plan;
-		if (plan.status === "holding" && plan.blockedBy.length) logEntry("", plan.agent + " holding behind " + plan.blockedBy.map(agentOf).join(", "));
-		else if (plan.status === "cleared" && !plan.fork) logEntry("", plan.agent + " cleared");
-		else if (plan.status === "released") logEntry("", plan.agent + " released");
-		if (addPaths(plan.claims.map((c) => c.path))) layout();
-		else renderOverlay();
 	} else if (ev.type === "drift") {
 		logEntry("drift", agentOf(ev.planId) + " drifted: ", ev.paths);
 		if (addPaths(ev.paths)) layout();
 		flash(ev.paths, "drift", "DRIFT " + agentOf(ev.planId));
-	} else if (ev.type === "land") {
-		const p = plans[ev.planId];
-		lands.push({ sha: ev.sha, planId: ev.planId, agent: ev.agent || p?.agent || ev.planId, summary: ev.summary || p?.task || "", paths: ev.paths, at: ev.at });
-		logEntry("land", agentOf(ev.planId) + " landed ", [ev.sha.slice(0, 7)]);
-		renderTimeline();
-		if (addPaths(ev.paths)) layout();
-		flash(ev.paths, "land", "LANDED " + agentOf(ev.planId));
-		loadTreeSoon();
+	} else if (ev.plan) {
+		// Plan lifecycle events (filed, holding, cleared, amended, landed, released...) carry
+		// the plan as it now stands.
+		/** @type {Plan} */
+		const plan = ev.plan;
+		plans[plan.id] = plan;
+		if (ev.type === "holding") logEntry("", plan.agent + " holding behind " + ev.blockedBy.map(agentOf).join(", "));
+		else if (ev.type === "cleared") logEntry("", plan.agent + " cleared");
+		else if (ev.type === "released") logEntry("", plan.agent + " released");
+		else if (ev.type === "amended") logEntry("", plan.agent + " amended: ", ev.added);
+		else if (ev.type === "deadlock") logEntry("drift", plan.agent + " refused (deadlock): ", ev.paths);
+		if (ev.type === "landed") {
+			lands.push({ sha: ev.sha, planId: plan.id, agent: plan.agent, summary: ev.summary || plan.task, paths: ev.paths, at: ev.at });
+			logEntry("land", plan.agent + " landed ", [ev.sha.slice(0, 7)]);
+			renderTimeline();
+			if (addPaths(ev.paths)) layout();
+			flash(ev.paths, "land", "LANDED " + plan.agent);
+			loadTreeSoon();
+		}
+		if (addPaths(plan.claims.map((c) => c.path))) layout();
+		else renderOverlay();
 	} else if (ev.type === "stat") {
 		stats[ev.key] = (stats[ev.key] || 0) + 1;
 		renderCounters(ev.key);

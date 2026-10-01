@@ -12,7 +12,7 @@ Plain Git finds out about conflicts at merge time, after the work is done. With 
                          └────────────────────────────────┬───────────────────────┘
                                                           ▼
           ┌────────────── Tower Durable Object, one per trunk (src/tower.ts) ────────────┐
-          │ SQLite: plans · lands · land_paths · stats      WebSocket broadcast (/live)  │
+          │ SQLite: plans · lands · land_paths · stats · events   live feed (/live)      │
           │                                                                              │
           │  file plan ─▶ overlap check (src/claims.ts) ─▶ holding | cleared             │
           │  cleared   ─▶ trunk.fork() + fork.createToken("write")                       │
@@ -37,7 +37,7 @@ Plain Git finds out about conflicts at merge time, after the work is done. With 
 
 ## API
 
-All routes are under `/repos/:repo` and require `Authorization: Bearer $TOWER_API_KEY`. The WebSocket route also accepts `?key=`. The optional read-only `TOWER_DASHBOARD_KEY` opens only `GET /live`, `/state` and `/tree`, so it is safe to show in a dashboard URL.
+All routes are under `/repos/:repo` and require `Authorization: Bearer $TOWER_API_KEY`. The WebSocket route also accepts `?key=`. The optional read-only `TOWER_DASHBOARD_KEY` opens only `GET /live`, `/state`, `/events` and `/tree`, so it is safe to show in a dashboard URL.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -51,9 +51,10 @@ All routes are under `/repos/:repo` and require `Authorization: Bearer $TOWER_AP
 | POST | `/plans/:id/land` `{summary?, evidence?}` | Merge gate: land onto trunk, or 409 with the drifted paths. |
 | POST | `/plans/:id/release` | Abandon a plan and free its airspace. |
 | GET | `/state` | Active plans, recent lands (with their paths), stats. |
+| GET | `/events?since=&plan=&limit=` | The event log in `seq` order: filed, holding (with `blockedBy`), cleared, provisioned, amended, amendment_held, deadlock, drift (with `paths`), landed, released and stat events. Pages of `limit` (default 1000, max 10000); pass the returned `last` as the next `since`. Keeps the last 50,000 events; cleared by `DELETE /`. |
 | GET | `/tree` | Every file path on trunk HEAD, for the dashboard's codebase map. Cached until HEAD moves. |
 | GET | `/why?path=` | Landed changes (with evidence) that touched a path. |
-| GET | `/live` (WebSocket) | A `state` snapshot on connect, then live plan, drift, land and stat events. |
+| GET | `/live?since=` (WebSocket) | A `state` snapshot (with the latest `seq`) on connect, then each event as it is logged. With `?since=<seq>`, the events after that seq instead of the snapshot, so a reconnecting client catches up without gaps (a fresh snapshot if they were pruned or the trunk was reset). |
 | GET | `/<page>?key=` | A UI page from `web/`, such as `/dashboard` (no key needed to load it; it calls the API with its `?key=`). |
 
 ## Dashboard

@@ -61,8 +61,10 @@ export async function api(path, init = {}) {
 }
 
 /**
- * Subscribes to /repos/:repo/live, reconnecting with backoff. `onStatus` hears "live" on
- * connect and "down" on each drop. Returns a function that closes the feed for good.
+ * Subscribes to /repos/:repo/live, reconnecting with backoff. The first connect gets a
+ * `state` snapshot; a reconnect passes ?since= the last seq seen, so it gets the events it
+ * missed instead (or a fresh snapshot if they are gone). `onStatus` hears "live" on connect
+ * and "down" on each drop. Returns a function that closes the feed for good.
  * @param {(event: any) => void} onEvent
  * @param {(status: "live" | "down") => void} [onStatus]
  */
@@ -71,10 +73,19 @@ export function live(onEvent, onStatus) {
 	let stopped = false;
 	/** @type {WebSocket | null} */
 	let ws = null;
+	/** @type {number | null} */
+	let seq = null;
 	function connect() {
-		ws = new WebSocket(BASE.replace(/^http/, "ws") + "/live?key=" + encodeURIComponent(KEY));
+		const since = seq === null ? "" : "&since=" + seq;
+		ws = new WebSocket(BASE.replace(/^http/, "ws") + "/live?key=" + encodeURIComponent(KEY) + since);
 		ws.onopen = () => { backoff = 1000; onStatus?.("live"); };
-		ws.onmessage = (e) => onEvent(JSON.parse(e.data));
+		ws.onmessage = (e) => {
+			const ev = JSON.parse(e.data);
+			if (ev.type === "state") seq = ev.state.seq ?? null;
+			else if (ev.type === "reset") seq = null;
+			else if (typeof ev.seq === "number") seq = ev.seq;
+			onEvent(ev);
+		};
 		ws.onclose = () => {
 			if (stopped) return;
 			onStatus?.("down");

@@ -12,12 +12,13 @@
 //
 // This class is the router; the logic lives in src/tower/: plans.ts (file, clear, amend,
 // release), landing.ts (check, land, why), trunk.ts (init, teardown, tree), events.ts
-// (broadcast, stats, dashboard state), schema.ts, and core.ts (shared types and helpers).
+// (the persisted event log and live feed, stats, dashboard state), schema.ts, and core.ts
+// (shared types and helpers).
 
 import { DurableObject } from "cloudflare:workers";
 import type { TrunkWorkspace } from "./land";
 import { type Core, json, setMeta, type Tree } from "./tower/core";
-import { live, state } from "./tower/events";
+import { events, live, state } from "./tower/events";
 import { check, land, why } from "./tower/landing";
 import { amend, file, release, status } from "./tower/plans";
 import { schema } from "./tower/schema";
@@ -46,11 +47,15 @@ export class Tower extends DurableObject<Env> implements Core {
 		const body = request.method === "POST" ? await request.json<any>().catch(() => ({})) : {};
 
 		try {
-			if (request.headers.get("Upgrade") === "websocket") return live(this);
+			if (request.headers.get("Upgrade") === "websocket") return live(this, url.searchParams.get("since"));
 			if (request.method === "POST" && parts[0] === "init") return json(await init(this, body.importUrl));
 			if (request.method === "DELETE" && parts.length === 0) return json(await destroy(this));
 			if (request.method === "POST" && parts[0] === "token") return json(await readToken(this));
 			if (request.method === "GET" && parts[0] === "state") return json(state(this));
+			if (request.method === "GET" && parts[0] === "events") {
+				const q = url.searchParams;
+				return json(events(this, { since: q.get("since"), plan: q.get("plan"), limit: q.get("limit") }));
+			}
 			if (request.method === "GET" && parts[0] === "tree") return json(await tree(this));
 			if (request.method === "GET" && parts[0] === "why") return json(why(this, url.searchParams.get("path") ?? ""));
 			if (parts[0] === "plans") {

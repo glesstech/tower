@@ -1,6 +1,6 @@
 // Who may call a /repos/:repo route. The operator key opens everything. The optional
-// dashboard key only watches: the live WebSocket, the state snapshot and the trunk file
-// tree. It never reaches MCP, tokens, plans, init or teardown, so it is safe to put in a
+// dashboard key only watches: the live WebSocket, the state snapshot, the event log and
+// the trunk file tree. It never reaches MCP, tokens, plans, init or teardown, so it is safe to put in a
 // dashboard URL shown on screen.
 
 export type Access = "operator" | "dashboard" | null;
@@ -20,5 +20,5 @@ export function access(
 function readOnly({ method, rest, websocket }: { method: string; rest: string; websocket: boolean }): boolean {
 	if (method !== "GET") return false;
 	if (websocket) return rest === "/live";
-	return rest === "/state" || rest === "/tree";
+	return rest === "/state" || rest === "/events" || rest === "/tree";
 }

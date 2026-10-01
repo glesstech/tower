@@ -1,7 +1,7 @@
 // The trunk repo itself: creating it, read tokens for operators, teardown, and the file tree.
 
 import { branch, type Core, deleteRepo, repo, serial, setMeta } from "./core";
-import { broadcast } from "./events";
+import { reset } from "./events";
 import { schema } from "./schema";
 
 const TREE_LIMIT = 5000;
@@ -44,7 +44,7 @@ export async function destroy(t: Core) {
 			.map((r) => r.fork);
 		const repos = [...forks, repo(t)];
 		const deleted = (await Promise.all(repos.map((name) => deleteRepo(t, name)))).filter(Boolean).length;
-		broadcast(t, { type: "reset" });
+		reset(t);
 		await t.ctx.storage.deleteAll();
 		t.workspace = null;
 		schema(t.sql);

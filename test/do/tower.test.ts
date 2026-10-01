@@ -384,3 +384,134 @@ describe("dashboard", () => {
 		expect(state.stats.landed).toBe(1);
 	});
 });
+
+describe("event log", () => {
+	const history = async (t: Awaited<ReturnType<typeof tower>>, query = "") => (await t.call("GET", `/events${query}`)).body;
+
+	// Open /live as a client would and collect what it is sent.
+	const connect = async (t: Awaited<ReturnType<typeof tower>>, query = "") => {
+		const res = await t.stub.fetch(`https://tower/live${query}`, { headers: { Upgrade: "websocket", "X-Tower-Repo": REPO } });
+		const ws = res.webSocket!;
+		const got: Body[] = [];
+		ws.addEventListener("message", (e) => {
+			got.push(JSON.parse(e.data as string));
+		});
+		ws.accept();
+		const settle = () => new Promise((r) => setTimeout(r, 20));
+		await settle();
+		return { got, settle, close: () => ws.close() };
+	};
+
+	it("records a run's full ordered history: filed, holding, cleared, amended, drift, landed, released", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/a.ts"]);
+		const b = await t.file("b", ["src/a.ts"]);
+		await t.call("POST", `/plans/${a.plan.id}/amend`, { claims: ["docs/"] });
+		await t.push(a.plan.id, { ...SEED, "src/a.ts": "a2\n", "README.md": "drifted\n" });
+		expect((await t.call("POST", `/plans/${a.plan.id}/land`, { summary: "change a" })).status).toBe(409);
+		await t.push(a.plan.id, { ...SEED, "src/a.ts": "a2\n" });
+		expect((await t.call("POST", `/plans/${a.plan.id}/land`, { summary: "change a" })).status).toBe(200);
+		await t.plan(b.plan.id);
+		await t.call("POST", `/plans/${b.plan.id}/release`);
+
+		const { events, last } = await history(t);
+		const seqs = events.map((e: Body) => e.seq);
+		expect(seqs).toEqual([...seqs].sort((x, y) => x - y));
+		expect(new Set(seqs).size).toBe(seqs.length);
+		expect(last).toBe(seqs.at(-1));
+
+		const lifecycle = events.filter((e: Body) => e.type !== "stat").map((e: Body) => `${e.agent}:${e.type}`);
+		expect(lifecycle).toEqual([
+			"a:filed", "a:cleared", "a:provisioned",
+			"b:filed", "b:holding",
+			"a:amended",
+			"a:drift",
+			"a:landed", "b:cleared",
+			"b:provisioned",
+			"b:released",
+		]);
+		const find = (agent: string, type: string) => events.find((e: Body) => e.agent === agent && e.type === type);
+		expect(find("b", "holding")).toMatchObject({ planId: b.plan.id, blockedBy: [a.plan.id], plan: { status: "holding" } });
+		expect(find("a", "amended")).toMatchObject({ added: ["docs/"] });
+		expect(find("a", "drift")).toMatchObject({ planId: a.plan.id, paths: ["README.md"], blocked: true });
+		expect(find("a", "landed")).toMatchObject({ sha: LANDED_SHA, summary: "change a", paths: ["src/a.ts"], plan: { status: "landed" } });
+		expect(find("b", "released")).toMatchObject({ plan: { status: "released" } });
+		expect(events.filter((e: Body) => e.type === "stat").map((e: Body) => e.key)).toEqual(["conflicts_prevented", "drift_blocked", "landed"]);
+	});
+
+	it("pages with since= and limit=, and filters by plan", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/a.ts"]);
+		await t.file("b", ["src/a.ts"]);
+		await t.call("POST", `/plans/${a.plan.id}/release`);
+		const all = (await history(t)).events;
+		expect(all.length).toBeGreaterThan(5);
+
+		const paged: Body[] = [];
+		let since = 0;
+		for (;;) {
+			const page = await history(t, `?since=${since}&limit=2`);
+			if (!page.events.length) break;
+			expect(page.events.length).toBeLessThanOrEqual(2);
+			paged.push(...page.events);
+			since = page.last;
+		}
+		expect(paged).toEqual(all);
+		expect((await history(t, `?since=${since}`)).last).toBe(since);
+
+		const forA = (await history(t, `?plan=${a.plan.id}`)).events;
+		expect(forA.map((e: Body) => e.type)).toEqual(["filed", "cleared", "provisioned", "released"]);
+		expect(forA.every((e: Body) => e.planId === a.plan.id)).toBe(true);
+	});
+
+	it("records refused deadlocks and held amendments once", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/a.ts"]);
+		const b = await t.file("b", ["src/b.ts"]);
+		await t.call("POST", `/plans/${a.plan.id}/amend`, { claims: ["src/b.ts"] });
+		await t.call("POST", `/plans/${a.plan.id}/amend`, { claims: ["src/b.ts"] });
+		await t.call("POST", `/plans/${b.plan.id}/amend`, { claims: ["src/a.ts"] });
+		const events = (await history(t)).events;
+		expect(events.filter((e: Body) => e.type === "amendment_held")).toEqual([
+			expect.objectContaining({ planId: a.plan.id, paths: ["src/b.ts"], blockedBy: [b.plan.id] }),
+		]);
+		expect(events.find((e: Body) => e.type === "deadlock")).toMatchObject({
+			planId: b.plan.id, paths: ["src/a.ts"], cycle: [b.plan.id, a.plan.id, b.plan.id],
+		});
+	});
+
+	it("streams live events with their seq, and catches a reconnecting client up with since=", async () => {
+		const t = await tower();
+		const first = await connect(t);
+		expect(first.got).toEqual([expect.objectContaining({ type: "state", state: expect.objectContaining({ seq: 0 }) })]);
+		const a = await t.file("a", ["src/a.ts"]);
+		await first.settle();
+		const live = first.got.slice(1);
+		expect(live.map((e) => e.type)).toEqual(["filed", "cleared", "provisioned"]);
+		expect(live).toEqual((await history(t)).events);
+		first.close();
+
+		// Missed while disconnected.
+		await t.file("b", ["src/a.ts"]);
+		await t.call("POST", `/plans/${a.plan.id}/release`);
+		const missed = (await history(t, `?since=${live.at(-1)!.seq}`)).events;
+		expect(missed.length).toBeGreaterThan(0);
+
+		const again = await connect(t, `?since=${live.at(-1)!.seq}`);
+		expect(again.got).toEqual(missed);
+		again.close();
+
+		// A seq from before a reset (or otherwise unknown) gets a fresh snapshot instead.
+		const stale = await connect(t, "?since=99999");
+		expect(stale.got).toEqual([expect.objectContaining({ type: "state" })]);
+		stale.close();
+	});
+
+	it("clears the log on DELETE", async () => {
+		const t = await tower();
+		await t.file("a", ["src/a.ts"]);
+		expect((await history(t)).events.length).toBeGreaterThan(0);
+		await t.call("DELETE", "/");
+		expect((await history(t)).events).toEqual([]);
+	});
+});

@@ -12,9 +12,10 @@ describe("access", () => {
 		expect(access(keys, "op", get("/mcp"))).toBe("operator");
 	});
 
-	it("lets the dashboard key watch: live feed, state and tree", () => {
+	it("lets the dashboard key watch: live feed, state, events and tree", () => {
 		expect(access(keys, "view", get("/live", true))).toBe("dashboard");
 		expect(access(keys, "view", get("/state"))).toBe("dashboard");
+		expect(access(keys, "view", get("/events"))).toBe("dashboard");
 		expect(access(keys, "view", get("/tree"))).toBe("dashboard");
 	});
 
@@ -49,7 +50,7 @@ describe("pageAsset", () => {
 	});
 
 	it("never shadows the API", () => {
-		for (const rest of ["/state", "/tree", "/why", "/live", "/mcp"]) expect(pageAsset(get(rest))).toBeNull();
+		for (const rest of ["/state", "/events", "/tree", "/why", "/live", "/mcp"]) expect(pageAsset(get(rest))).toBeNull();
 		expect(pageAsset(get("/dashboard", true))).toBeNull();
 		expect(pageAsset({ method: "POST", rest: "/plans", websocket: false })).toBeNull();
 		expect(pageAsset({ method: "DELETE", rest: "/", websocket: false })).toBeNull();
