@@ -9,7 +9,6 @@ import { MemoryFS } from "./memory-fs";
 import type { Change } from "./treediff";
 
 const DIR = "/trunk";
-const BRANCH = "main";
 
 type TreeEntry = { mode: string; path: string; oid: string; type: "blob" | "tree" | "commit" };
 type Nested = { rest: string; change: Change };
@@ -22,7 +21,10 @@ export class TrunkWorkspace {
 	private fs: MemoryFS | null = null;
 	private head: string | null = null;
 
-	constructor(private remote: string) {}
+	constructor(
+		private remote: string,
+		readonly branch: string,
+	) {}
 
 	async land(opts: {
 		token: string;
@@ -64,9 +66,9 @@ export class TrunkWorkspace {
 			},
 		});
 
-		await git.writeRef({ fs, dir: DIR, ref: `refs/heads/${BRANCH}`, value: oid, force: true });
+		await git.writeRef({ fs, dir: DIR, ref: `refs/heads/${this.branch}`, value: oid, force: true });
 		try {
-			const res = await git.push({ fs, http, dir: DIR, url: this.remote, ref: BRANCH, onAuth });
+			const res = await git.push({ fs, http, dir: DIR, url: this.remote, ref: this.branch, onAuth });
 			if (!res.ok) throw new Error(res.error ?? "push rejected");
 		} catch (err) {
 			this.fs = null; // local state no longer matches trunk; rebuild next time
@@ -84,14 +86,14 @@ export class TrunkWorkspace {
 			http,
 			dir: DIR,
 			url: this.remote,
-			ref: BRANCH,
+			ref: this.branch,
 			singleBranch: true,
 			depth: 1,
 			noCheckout: true,
 			noTags: true,
 			onAuth: () => ({ username: "x", password: secret(token) }),
 		});
-		const head = await git.resolveRef({ fs, dir: DIR, ref: `refs/heads/${BRANCH}` });
+		const head = await git.resolveRef({ fs, dir: DIR, ref: `refs/heads/${this.branch}` });
 		if (head !== trunkHead) throw new Error(`trunk moved during land: ${head} != ${trunkHead}`);
 		this.fs = fs;
 		this.head = head;

@@ -108,8 +108,31 @@ export class Tower extends DurableObject<Env> {
 		const created = importUrl
 			? await this.env.ARTIFACTS.import({ source: { url: importUrl }, target: { name } })
 			: await this.env.ARTIFACTS.create(name, { setDefaultBranch: "main" });
+		// An imported repo keeps its own default branch (often "master"); every clone, push and
+		// fork base follows it. An import still in progress can't answer info() yet, so fall back
+		// to what the create/import call reported.
+		let branch = created.defaultBranch;
+		try {
+			using trunk = await this.env.ARTIFACTS.get(name);
+			branch = (await trunk.info()).defaultBranch;
+		} catch (err) {
+			const code = (err as ArtifactsError).code;
+			if (code !== "IMPORT_IN_PROGRESS" && code !== "CREATE_IN_PROGRESS") throw err;
+		}
+		this.setMeta("branch", branch);
+		this.workspace = null;
 		// The initial token lets an operator seed trunk; agents never get trunk write access.
-		return { name: created.name, remote: created.remote, token: created.token };
+		return { name: created.name, remote: created.remote, token: created.token, branch };
+	}
+
+	// Trunk's branch, from meta; Towers initialized before it was recorded look it up once.
+	private async branch(): Promise<string> {
+		const cached = this.getMeta("branch");
+		if (cached) return cached;
+		using trunk = await this.env.ARTIFACTS.get(this.repo());
+		const { defaultBranch } = await trunk.info();
+		this.setMeta("branch", defaultBranch);
+		return defaultBranch;
 	}
 
 	// A short-lived, read-only trunk token, so an operator can fetch landed work (e.g. into a PR).
@@ -179,8 +202,8 @@ export class Tower extends DurableObject<Env> {
 			}
 		}
 		using fork = await this.env.ARTIFACTS.get(this.plan(id).fork!);
-		const [info, token] = await Promise.all([fork.info(), fork.createToken("write", TOKEN_TTL)]);
-		return { plan: this.plan(id), fork: { name: info.name, remote: info.remote, token: token.plaintext } };
+		const [info, token, branch] = await Promise.all([fork.info(), fork.createToken("write", TOKEN_TTL), this.branch()]);
+		return { plan: this.plan(id), fork: { name: info.name, remote: info.remote, token: token.plaintext, branch } };
 	}
 
 	// Provisioning doesn't wait behind lands: the base is read from the fork itself, so it is
@@ -197,6 +220,7 @@ export class Tower extends DurableObject<Env> {
 	private async forkFor(plan: Plan) {
 		if (this.plan(plan.id).fork) return;
 		const name = `${this.repo()}--${plan.id}`;
+		const branch = await this.branch();
 		using trunk = await this.env.ARTIFACTS.get(this.repo());
 		try {
 			await retry(() => trunk.fork(name, { description: `${plan.agent}: ${plan.task}` }));
@@ -206,7 +230,7 @@ export class Tower extends DurableObject<Env> {
 		}
 		using fork = await retry(() => this.env.ARTIFACTS.get(name));
 		const head = await retry(async () => {
-			const [commit] = await fork.log({ limit: 1 });
+			const [commit] = await fork.log({ ref: branch, limit: 1 });
 			if (!commit) throw Object.assign(new Error(`fork ${name} has no commits yet`), { code: "FORK_IN_PROGRESS" });
 			return commit;
 		});
@@ -268,8 +292,10 @@ export class Tower extends DurableObject<Env> {
 
 	private async changes(plan: Plan): Promise<{ head: string; changes: Change[]; drift: string[] }> {
 		if (plan.status !== "cleared" || !plan.fork || !plan.base) throw new Error(`plan ${plan.id} is not in flight`);
+		const branch = await this.branch();
 		using fork = await this.env.ARTIFACTS.get(plan.fork);
-		const [head] = await fork.log({ limit: 1 });
+		const [head] = await fork.log({ ref: branch, limit: 1 });
+		if (!head) throw new Error(`fork ${plan.fork} has no commits on ${branch}`);
 		const [before, after] = await Promise.all([fork.readCommit(plan.base), fork.readCommit(head.hash)]);
 		const changes = await diffTrees(fork, before!.treeHash, after!.treeHash);
 		const drift = changes.map((c) => c.path).filter((p) => !covers(plan.claims, p));
@@ -294,14 +320,15 @@ export class Tower extends DurableObject<Env> {
 			}
 
 			using fork = await this.env.ARTIFACTS.get(plan.fork!);
+			const branch = await this.branch();
 			using trunk = await this.env.ARTIFACTS.get(this.repo());
 			const [[trunkHead], info, token, agentCommit] = await Promise.all([
-				trunk.log({ limit: 1 }),
+				trunk.log({ ref: branch, limit: 1 }),
 				trunk.info(),
 				trunk.createToken("write", 300),
 				fork.readCommit(head),
 			]);
-			this.workspace ??= new TrunkWorkspace(info.remote);
+			if (this.workspace?.branch !== branch) this.workspace = new TrunkWorkspace(info.remote, branch);
 			const summary = body.summary?.trim() || agentCommit!.message.split("\n")[0];
 			const sha = await this.workspace.land({
 				token: token.plaintext,

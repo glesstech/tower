@@ -16,8 +16,8 @@ push to the shared trunk; you work in a private fork and tower lands your change
    gives you. If another agent holds an overlapping path, you wait in line.
 3. Edit only the paths you claimed. If you discover you need another path, call amend_claims
    first; if it is not granted, wait and retry, or finish without it.
-4. Commit and push to the fork's main branch, then call land with a short summary and your
-   evidence (what you were asked, your plan, and the checks you ran).
+4. Commit and push to the fork's trunk branch (wait_for_clearance gives the command), then call
+   land with a short summary and your evidence (what you were asked, your plan, and the checks you ran).
 5. If land reports drift, undo the changes outside your claims (or amend), push, and land again.
 6. If you give up, call release so others are not blocked.`;
 
@@ -70,7 +70,7 @@ export function createServer(env: Env, repo: string): McpServer {
 				res = await call("GET", `/plans/${plan_id}`);
 			}
 			if (res.status !== 200 || !res.body.fork) return result(res);
-			const { remote, token } = res.body.fork;
+			const { remote, token, branch = "main" } = res.body.fork;
 			const auth = `-c http.extraHeader="Authorization: Bearer ${token}"`;
 			return result({
 				status: 200,
@@ -79,7 +79,7 @@ export function createServer(env: Env, repo: string): McpServer {
 					fork: res.body.fork,
 					git: {
 						clone: `git ${auth} clone ${remote} <dir>`,
-						push: `git ${auth} push ${remote} HEAD:main`,
+						push: `git ${auth} push ${remote} HEAD:${branch}`,
 						note: "The token only works on this fork and expires in an hour; call wait_for_clearance again for a fresh one.",
 					},
 				},
