@@ -24,6 +24,8 @@ A run takes roughly 10–30 minutes (each agent installs dependencies, codes, ch
 ## Project basics
 
 - `npm run typecheck`: TypeScript check. Run it before landing any change.
+- `npm test`: unit tests (Node) and Durable Object tests (workerd, Artifacts faked). No Cloudflare account needed. Run it before landing any change; CI runs both on every push.
+- `npm run test:integration`: opt-in end-to-end run of the sim against `tower-dev` (needs `TOWER_API_KEY` and `wrangler login`). Spends Artifacts operations, so CI never runs it.
 - `npm run dev`: local Worker against the `tower-dev` Artifacts namespace.
 - `npm run sim -- --repo <name> --seed`: scripted agents for load and behavior testing; cleans up after itself.
 - Architecture, API and MCP tools are described in `README.md`.
