@@ -8,8 +8,10 @@
 //     npm run swarm -- --repo tower-src --issues 11,12 --task "Fix the typo in README.md"
 //
 // --init creates the trunk from the current directory's HEAD if it doesn't exist yet.
-// --pr fetches what landed into a local swarm/<timestamp> branch, pushes it, opens a GitHub PR
-// with each agent's evidence, then tears the trunk down so the next run starts from main.
+// --pr fetches what landed into a local swarm/<timestamp> branch, runs typecheck and test on it,
+// pushes it, opens a GitHub PR with each agent's evidence and the combined check results, then
+// tears the trunk down so the next run starts from main. --checks "<cmd>" replaces the npm
+// typecheck/test default, for repos that don't use npm (e.g. --checks "go test ./...").
 
 import { execFile, spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
@@ -30,6 +32,7 @@ const { values: args } = parseArgs({
 		logs: { type: "string", default: "swarm-logs" },
 		init: { type: "boolean", default: false },
 		pr: { type: "boolean", default: false },
+		checks: { type: "string" },
 		"dry-run": { type: "boolean", default: false },
 	},
 });
@@ -201,6 +204,7 @@ async function openPr(state, codes) {
 	log("swarm", `fetched trunk into ${branch}`);
 	// Everything landed is now in the local branch, so the trunk can go even if the PR step fails.
 	await teardown();
+	const checks = await verify(branch);
 
 	const issues = work.filter((w) => w.task.issue && landed.some((l) => l.agent === w.name)).map((w) => w.task.issue);
 	const title = `Swarm: ${landed.length} change${landed.length === 1 ? "" : "s"}${issues.length ? ` (${issues.map((n) => `#${n}`).join(", ")})` : ""}`;
@@ -223,6 +227,11 @@ async function openPr(state, codes) {
 		]),
 		...(missed.length ? ["", "## Did not land", ...missed] : []),
 		"",
+		"## Combined checks",
+		"",
+		checks.summary,
+		...(checks.output ? ["", "```", checks.output, "```"] : []),
+		"",
 		`Stats: ${JSON.stringify(state.stats)}`,
 		"",
 		...issues.map((n) => `Closes #${n}`),
@@ -239,6 +248,51 @@ async function openPr(state, codes) {
 	} catch (err) {
 		log("swarm", `PR step failed (${err.message.split("\n")[0]}); the work is in local branch ${branch}`);
 	}
+}
+
+// Each agent ran its checks against trunk as it was when it landed, not against the other
+// agents' work. Path claims can't catch a semantic clash between disjoint paths (one change
+// breaking another's tests), so run the checks on the combined branch in a scratch worktree:
+// --checks if given, else the npm `typecheck` and `test` scripts if the repo defines them.
+// Failures are reported in the PR, not fatal.
+async function verify(branch) {
+	const dir = await mkdtemp(join(tmpdir(), "swarm-verify-"));
+	const sh = (cmd) => run("sh", ["-c", cmd], { cwd: dir, maxBuffer: 64 << 20 });
+	try {
+		await run("git", ["worktree", "add", "-q", "--detach", dir, branch]);
+		const plan = args.checks ? { setup: null, steps: [args.checks] } : await npmChecks(dir);
+		if (!plan) return { ok: true, summary: "No checks defined (no npm `typecheck` or `test` script, no `--checks`); nothing ran." };
+		log("swarm", `running ${plan.steps.join(", ")} on ${branch}`);
+		if (plan.setup) await sh(plan.setup);
+		for (const step of plan.steps) {
+			try {
+				await sh(step);
+			} catch (err) {
+				const output = `${err.stdout ?? ""}${err.stderr ?? ""}`.trim().split("\n").slice(-40).join("\n");
+				log("swarm", `combined checks FAILED: ${step}`);
+				return { ok: false, summary: `❌ \`${step}\` fails on the combined branch (the agents' changes may clash even though their claims didn't overlap).`, output };
+			}
+		}
+		log("swarm", `combined checks passed (${plan.steps.join(", ")})`);
+		return { ok: true, summary: `✅ ${plan.steps.map((s) => `\`${s}\``).join(" and ")} ${plan.steps.length === 1 ? "passes" : "pass"} on the combined branch.` };
+	} catch (err) {
+		log("swarm", `combined checks could not run (${err.message.split("\n")[0]})`);
+		return { ok: false, summary: `⚠️ Combined checks could not run: ${err.message.split("\n")[0]}` };
+	} finally {
+		await run("git", ["worktree", "remove", "--force", dir]).catch(() => rm(dir, { recursive: true, force: true }));
+	}
+}
+
+// The npm checks a repo defines, or null. `npm init`'s placeholder test script always fails,
+// so it doesn't count as a test.
+async function npmChecks(dir) {
+	const pkg = await readFile(join(dir, "package.json"), "utf8").catch(() => null);
+	if (!pkg) return null;
+	const { scripts = {} } = JSON.parse(pkg);
+	const steps = ["typecheck", "test"].filter((s) => scripts[s] && !scripts[s].includes("no test specified"));
+	if (!steps.length) return null;
+	const locked = await readFile(join(dir, "package-lock.json")).then(() => true, () => false);
+	return { setup: `npm ${locked ? "ci" : "install"} --no-audit --no-fund`, steps: steps.map((s) => `npm run ${s}`) };
 }
 
 async function teardown() {

@@ -56,7 +56,7 @@ async function seed(work) {
 	await run("git", ["init", "-b", "main"], { cwd: dir });
 	await run("git", ["add", "."], { cwd: dir });
 	await run("git", ["-c", "user.name=seed", "-c", "user.email=seed@tower.local", "commit", "-m", "seed"], { cwd: dir });
-	await git(dir, body.token, "push", body.remote, "HEAD:main");
+	await git(dir, body.token, "push", body.remote, `HEAD:${body.branch ?? "main"}`);
 	log("seed", `trunk ${body.remote}`);
 }
 
@@ -90,7 +90,7 @@ async function fly({ name, id, mod, file, drifts, body, work }) {
 	log(name, `cleared → ${body.fork.name}`);
 
 	const dir = join(work, name);
-	const { remote, token } = body.fork;
+	const { remote, token, branch = "main" } = body.fork;
 	await git(work, token, "clone", "-q", remote, dir);
 	const commit = (msg) =>
 		run("git", ["-c", `user.name=${name}`, "-c", `user.email=${name}@tower.local`, "commit", "-qam", msg], { cwd: dir });
@@ -98,7 +98,7 @@ async function fly({ name, id, mod, file, drifts, body, work }) {
 	await appendFile(join(dir, file), `${mod}.push(${JSON.stringify(name)});\n`);
 	if (drifts) await appendFile(join(dir, "README.md"), `${name} was here\n`);
 	await commit(`${name}: extend ${file}`);
-	await git(dir, token, "push", "-q", "origin", "HEAD:main");
+	await git(dir, token, "push", "-q", "origin", `HEAD:${branch}`);
 
 	const evidence = { prompt: `extend ${file}`, tests: { passed: 1, failed: 0 } };
 	let res = await api("POST", `/plans/${id}/land`, { evidence });
@@ -106,7 +106,7 @@ async function fly({ name, id, mod, file, drifts, body, work }) {
 		log(name, `DRIFT blocked: ${res.body.drift.join(", ")} — reverting`);
 		await run("git", ["checkout", "HEAD~1", "--", "README.md"], { cwd: dir });
 		await commit(`${name}: stay inside lease`);
-		await git(dir, token, "push", "-q", "origin", "HEAD:main");
+		await git(dir, token, "push", "-q", "origin", `HEAD:${branch}`);
 		res = await api("POST", `/plans/${id}/land`, { evidence });
 	}
 	if (res.status !== 200) throw new Error(`${name} land failed: ${JSON.stringify(res.body)}`);

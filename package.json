@@ -10,11 +10,15 @@
     "deploy:dev": "wrangler deploy --env dev",
     "types": "wrangler types",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:integration": "node scripts/integration.mjs",
     "sim": "node sim/agents.mjs",
     "swarm": "node swarm/swarm.mjs"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
     "typescript": "^7.0.2",
+    "vitest": "~4.1.0",
     "wrangler": "^4.145.0"
   },
   "dependencies": {
