@@ -1,1 +1,3 @@
 TOWER_API_KEY=change-me
+# Optional read-only key for the live dashboard (/repos/:repo/dashboard?key=...)
+TOWER_DASHBOARD_KEY=change-me-too

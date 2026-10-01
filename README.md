@@ -37,7 +37,7 @@ Plain Git finds out about conflicts at merge time, after the work is done. With 
 
 ## API
 
-All routes are under `/repos/:repo` and require `Authorization: Bearer $TOWER_API_KEY`. The WebSocket route also accepts `?key=`.
+All routes are under `/repos/:repo` and require `Authorization: Bearer $TOWER_API_KEY`. The WebSocket route also accepts `?key=`. The optional read-only `TOWER_DASHBOARD_KEY` opens only `GET /live`, `/state` and `/tree`, so it is safe to show in a dashboard URL.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -47,12 +47,18 @@ All routes are under `/repos/:repo` and require `Authorization: Bearer $TOWER_AP
 | POST | `/plans` `{agent, task, claims[]}` | File a flight plan. Returns `holding` or `cleared`, plus fork credentials if cleared. |
 | GET | `/plans/:id` | Poll a plan. Once cleared, returns the fork remote and a fresh fork token. |
 | POST | `/plans/:id/check` | Report touched paths and drift so far. |
-| POST | `/plans/:id/amend` `{claims[]}` | Extend an active plan's claims. Not granted while another plan holds an overlapping path. |
+| POST | `/plans/:id/amend` `{claims[]}` | Extend an active plan's claims. Free paths are granted at once; held paths wait (the plan keeps its fork and lease) until their holders land or release. An amendment that would close a wait cycle is refused with 409 `deadlock`. |
 | POST | `/plans/:id/land` `{summary?, evidence?}` | Merge gate: land onto trunk, or 409 with the drifted paths. |
 | POST | `/plans/:id/release` | Abandon a plan and free its airspace. |
-| GET | `/state` | Active plans, recent lands, stats. |
+| GET | `/state` | Active plans, recent lands (with their paths), stats. |
+| GET | `/tree` | Every file path on trunk HEAD, for the dashboard's codebase map. Cached until HEAD moves. |
 | GET | `/why?path=` | Landed changes (with evidence) that touched a path. |
-| GET | `/live` (WebSocket) | Live plan, drift, land and stat events for the dashboard. |
+| GET | `/live` (WebSocket) | A `state` snapshot on connect, then live plan, drift, land and stat events. |
+| GET | `/dashboard?key=` | The live dashboard page (no key needed to load it; it connects with its `?key=`). |
+
+## Dashboard
+
+Open `https://tower-dev.<subdomain>.workers.dev/repos/<repo>/dashboard?key=$TOWER_DASHBOARD_KEY`. Trunk is drawn as a treemap. Each in-flight agent is a colored dot over a tinted region covering its claims. Holding plans get a dashed outline and are listed with the agents they wait on. Drift flashes red on the offending paths, and each land flashes green and streams into the trunk timeline. The header counts conflicts prevented, drift blocked and landed. Set the key with `npx wrangler secret put TOWER_DASHBOARD_KEY [--env dev]`; the operator key works too.
 
 ## Agents: MCP
 
@@ -116,7 +122,7 @@ Cost: Artifacts bills operations and storage (Workers Paid includes 10,000 opera
 
 ## Roadmap
 
-- [ ] Live dashboard: a codebase map with agents as dots claiming regions, and a "conflicts prevented" counter
+- [x] Live dashboard: a codebase map with agents as dots claiming regions, and a "conflicts prevented" counter
 - [ ] Review by exception: score each land by risk, auto-land low-risk changes, and send the rest to a small human inbox
 - [ ] Symbol-level claims with a tree-sitter planning pass
 - [ ] Real LLM agents alongside scripted ones; a demo repo that's a Worker app, so Workers Builds gives every fork a preview URL

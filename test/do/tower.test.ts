@@ -145,6 +145,128 @@ describe("plan queueing", () => {
 	});
 });
 
+describe("amendments", () => {
+	const paths = (plan: { claims: { path: string }[] }) => plan.claims.map((c) => c.path);
+
+	it("holds a blocked amendment, keeping the fork and lease, until the blocker lands", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/a.ts"]);
+		const b = await t.file("b", ["docs/"]);
+		const held = await t.call("POST", `/plans/${a.plan.id}/amend`, { claims: ["docs/guide.md"] });
+		expect(held).toMatchObject({ status: 200, body: { granted: false, held: true, blockedBy: [b.plan.id] } });
+		expect(held.body.plan).toMatchObject({ status: "cleared", fork: a.plan.fork, amendment: { blockedBy: [b.plan.id] } });
+		expect(paths(held.body.plan)).toEqual(["src/a.ts"]);
+		expect(t.artifacts.repos.has(a.plan.fork)).toBe(true);
+
+		await t.push(b.plan.id, { ...SEED, "docs/guide.md": "g2\n" });
+		expect((await t.call("POST", `/plans/${b.plan.id}/land`, { summary: "docs" })).status).toBe(200);
+		const after = await t.plan(a.plan.id);
+		expect(after).toMatchObject({ status: "cleared", fork: a.plan.fork, amendment: null });
+		expect(paths(after)).toEqual(["src/a.ts", "docs/guide.md"]);
+		// Asking again once granted is a no-op success.
+		expect((await t.call("POST", `/plans/${a.plan.id}/amend`, { claims: ["docs/guide.md"] })).body.granted).toBe(true);
+	});
+
+	it("grants a held amendment when the blocker releases", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/a.ts"]);
+		const b = await t.file("b", ["src/b.ts"]);
+		await t.call("POST", `/plans/${a.plan.id}/amend`, { claims: ["src/b.ts"] });
+		await t.call("POST", `/plans/${b.plan.id}/release`);
+		expect(paths(await t.plan(a.plan.id))).toEqual(["src/a.ts", "src/b.ts"]);
+	});
+
+	it("grants free paths at once without disturbing a held amendment", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/a.ts"]);
+		await t.file("b", ["docs/"]);
+		await t.call("POST", `/plans/${a.plan.id}/amend`, { claims: ["docs/guide.md"] });
+		const granted = await t.call("POST", `/plans/${a.plan.id}/amend`, { claims: ["README.md", "src/a.ts"] });
+		expect(granted.body.granted).toBe(true);
+		expect(paths(granted.body.plan)).toEqual(["src/a.ts", "README.md"]);
+		expect(paths(granted.body.plan.amendment)).toEqual(["docs/guide.md"]);
+	});
+
+	it("does not duplicate paths already under a claimed directory", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/"]);
+		const res = await t.call("POST", `/plans/${a.plan.id}/amend`, { claims: ["src/a.ts"] });
+		expect(res.body.granted).toBe(true);
+		expect(paths(res.body.plan)).toEqual(["src/"]);
+	});
+
+	it("an in-flight amendment goes ahead of a holding plan for the same path", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/a.ts"]);
+		const b = await t.file("b", ["src/b.ts"]);
+		const c = await t.file("c", ["src/b.ts"]);
+		expect(c.plan.status).toBe("holding");
+		await t.call("POST", `/plans/${a.plan.id}/amend`, { claims: ["src/b.ts"] });
+		await t.call("POST", `/plans/${b.plan.id}/release`);
+		expect(paths(await t.plan(a.plan.id))).toEqual(["src/a.ts", "src/b.ts"]);
+		expect(await t.plan(c.plan.id)).toMatchObject({ status: "holding", blockedBy: [a.plan.id] });
+	});
+
+	it("refuses the amendment that would deadlock, leaving both leases and forks intact", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/a.ts"]);
+		const b = await t.file("b", ["src/b.ts"]);
+		expect((await t.call("POST", `/plans/${a.plan.id}/amend`, { claims: ["src/b.ts"] })).body.held).toBe(true);
+		const res = await t.call("POST", `/plans/${b.plan.id}/amend`, { claims: ["src/a.ts"] });
+		expect(res.status).toBe(409);
+		expect(res.body).toMatchObject({ granted: false, deadlock: [b.plan.id, a.plan.id, b.plan.id] });
+		expect(res.body.error).toMatch(/deadlock/);
+		expect(await t.plan(b.plan.id)).toMatchObject({ status: "cleared", fork: b.plan.fork, amendment: null });
+		expect(await t.plan(a.plan.id)).toMatchObject({ status: "cleared", fork: a.plan.fork, amendment: { blockedBy: [b.plan.id] } });
+		expect((await t.call("GET", "/state")).body.stats.deadlocks_prevented).toBe(1);
+
+		// b finishes without src/a.ts; a then gets src/b.ts.
+		await t.push(b.plan.id, { ...SEED, "src/b.ts": "b2\n" });
+		expect((await t.call("POST", `/plans/${b.plan.id}/land`, { summary: "b" })).status).toBe(200);
+		expect(paths(await t.plan(a.plan.id))).toEqual(["src/a.ts", "src/b.ts"]);
+	});
+
+	it("detects longer cycles", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/a.ts"]);
+		const b = await t.file("b", ["src/b.ts"]);
+		const c = await t.file("c", ["docs/"]);
+		await t.call("POST", `/plans/${a.plan.id}/amend`, { claims: ["src/b.ts"] });
+		await t.call("POST", `/plans/${b.plan.id}/amend`, { claims: ["docs/guide.md"] });
+		const res = await t.call("POST", `/plans/${c.plan.id}/amend`, { claims: ["src/a.ts"] });
+		expect(res).toMatchObject({ status: 409, body: { deadlock: [c.plan.id, a.plan.id, b.plan.id, c.plan.id] } });
+	});
+
+	it("re-asking for a held amendment does not count as a cycle with itself", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/a.ts"]);
+		await t.file("b", ["src/b.ts"]);
+		await t.call("POST", `/plans/${a.plan.id}/amend`, { claims: ["src/b.ts"] });
+		const again = await t.call("POST", `/plans/${a.plan.id}/amend`, { claims: ["src/b.ts"] });
+		expect(again).toMatchObject({ status: 200, body: { held: true } });
+		expect(paths(again.body.plan.amendment)).toEqual(["src/b.ts"]);
+		expect((await t.call("GET", "/state")).body.stats.amendments_held).toBe(1);
+	});
+
+	it("drops a plan's held amendment when it lands or releases", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/a.ts"]);
+		const b = await t.file("b", ["src/b.ts"]);
+		await t.call("POST", `/plans/${a.plan.id}/amend`, { claims: ["src/b.ts"] });
+		await t.call("POST", `/plans/${a.plan.id}/release`);
+		expect(await t.plan(a.plan.id)).toMatchObject({ status: "released", amendment: null });
+		await t.call("POST", `/plans/${b.plan.id}/release`);
+		expect(paths(await t.plan(a.plan.id))).toEqual(["src/a.ts"]);
+	});
+
+	it("rejects amending a closed plan", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/a.ts"]);
+		await t.call("POST", `/plans/${a.plan.id}/release`);
+		expect((await t.call("POST", `/plans/${a.plan.id}/amend`, { claims: ["src/b.ts"] })).status).toBe(400);
+	});
+});
+
 describe("drift", () => {
 	it("rejects a land that changes paths outside the lease with 409 and counts it", async () => {
 		const t = await tower();
@@ -231,5 +353,34 @@ describe("fork provisioning", () => {
 		const res = await t.call("DELETE", "/");
 		expect(res.body).toEqual({ deleted: 3 });
 		expect(t.artifacts.repos.size).toBe(0);
+	});
+});
+
+describe("dashboard", () => {
+	it("lists trunk's files for the codebase map, walking the tree only when HEAD moves", async () => {
+		const t = await tower();
+		const trunk = t.artifacts.repos.get(REPO)!;
+		let reads = 0;
+		const readTree = trunk.readTree.bind(trunk);
+		trunk.readTree = (hash: string) => (reads++, readTree(hash));
+
+		const first = await t.call("GET", "/tree");
+		expect(first.body).toEqual({ head: await trunk.head(), paths: ["README.md", "docs/guide.md", "src/a.ts", "src/b.ts"], truncated: false });
+		const walked = reads;
+		await t.call("GET", "/tree");
+		expect(reads).toBe(walked);
+
+		await trunk.commit({ ...SEED, "src/c.ts": "c\n" }, "add c");
+		expect((await t.call("GET", "/tree")).body.paths).toContain("src/c.ts");
+	});
+
+	it("includes each land's paths in the state snapshot", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/a.ts"]);
+		await t.push(a.plan.id, { ...SEED, "src/a.ts": "a2\n" });
+		await t.call("POST", `/plans/${a.plan.id}/land`, { summary: "change a" });
+		const state = (await t.call("GET", "/state")).body;
+		expect(state.lands).toEqual([expect.objectContaining({ sha: LANDED_SHA, agent: "a", paths: ["src/a.ts"] })]);
+		expect(state.stats.landed).toBe(1);
 	});
 });

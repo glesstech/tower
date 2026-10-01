@@ -15,7 +15,8 @@ push to the shared trunk; you work in a private fork and tower lands your change
 2. Call wait_for_clearance until it returns a fork, then clone the fork with the git command it
    gives you. If another agent holds an overlapping path, you wait in line.
 3. Edit only the paths you claimed. If you discover you need another path, call amend_claims
-   first; if it is not granted, wait and retry, or finish without it.
+   first. If it is held, keep working on what you have and call amend_claims again later; you
+   keep your fork either way. If it reports a deadlock, finish without that path.
 4. Commit and push to the fork's trunk branch (wait_for_clearance gives the command), then call
    land with a short summary and your evidence (what you were asked, your plan, and the checks you ran).
 5. If land reports drift, undo the changes outside your claims (or amend), push, and land again.
@@ -90,7 +91,8 @@ export function createServer(env: Env, repo: string): McpServer {
 	server.registerTool(
 		"amend_claims",
 		{
-			description: "Add paths to your plan's claims before editing them. Not granted if another agent holds an overlapping path right now.",
+			description:
+				"Add paths to your plan's claims before editing them. Free paths are granted at once. Paths another agent holds are held for you (granted: false, held: true) and granted when that agent lands or releases; call again to see. Refused with a deadlock if the wait would be circular.",
 			inputSchema: { plan_id: planId, claims },
 		},
 		async ({ plan_id, claims }) => result(await call("POST", `/plans/${plan_id}/amend`, { claims })),
