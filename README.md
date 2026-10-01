@@ -46,11 +46,30 @@ All routes are under `/repos/:repo` and require `Authorization: Bearer $TOWER_AP
 | POST | `/plans` `{agent, task, claims[]}` | File a flight plan. Returns `holding` or `cleared`, plus fork credentials if cleared. |
 | GET | `/plans/:id` | Poll a plan. Once cleared, returns the fork remote and a fresh fork token. |
 | POST | `/plans/:id/check` | Report touched paths and drift so far. |
+| POST | `/plans/:id/amend` `{claims[]}` | Extend an active plan's claims. Not granted while another plan holds an overlapping path. |
 | POST | `/plans/:id/land` `{summary?, evidence?}` | Merge gate: land onto trunk, or 409 with the drifted paths. |
 | POST | `/plans/:id/release` | Abandon a plan and free its airspace. |
 | GET | `/state` | Active plans, recent lands, stats. |
 | GET | `/why?path=` | Landed changes (with evidence) that touched a path. |
 | GET | `/live` (WebSocket) | Live plan, drift, land and stat events for the dashboard. |
+
+## Agents: MCP
+
+Tower is agent-agnostic. Any agent that speaks MCP can coordinate through it, and anything else can use the HTTP API above. Each trunk has an MCP endpoint at `/repos/:repo/mcp` (Streamable HTTP, same bearer key). Its tools are `file_plan`, `wait_for_clearance`, `amend_claims`, `check`, `land`, `release`, `why` and `state`. The server's instructions teach the protocol, so the agent's prompt only needs the task and the repo name. Agents use plain `git` with the fork remote and token that `wait_for_clearance` returns.
+
+```sh
+# Claude Code
+claude mcp add --transport http tower https://tower-dev.<subdomain>.workers.dev/repos/<repo>/mcp \
+  --header "Authorization: Bearer $TOWER_API_KEY"
+```
+
+```jsonc
+// opencode (opencode.json)
+{ "mcp": { "tower": { "type": "remote", "url": "https://tower-dev.<subdomain>.workers.dev/repos/<repo>/mcp",
+                      "headers": { "Authorization": "Bearer <TOWER_API_KEY>" } } } }
+```
+
+Tested with Claude Code (Haiku) and opencode (Gemini 3.5 Flash) running concurrently on one trunk. Both planned, cloned their forks, landed with evidence, and stayed inside their claims.
 
 ## Running it
 

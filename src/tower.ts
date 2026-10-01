@@ -89,6 +89,7 @@ export class Tower extends DurableObject<Env> {
 				const id = parts[1];
 				if (request.method === "GET" && parts.length === 2) return json(await this.status(id));
 				if (request.method === "POST" && parts[2] === "check") return json(await this.check(id));
+				if (request.method === "POST" && parts[2] === "amend") return json(this.amend(id, body.claims));
 				if (request.method === "POST" && parts[2] === "land") return await this.land(id, body);
 				if (request.method === "POST" && parts[2] === "release") return json(await this.release(id));
 			}
@@ -207,6 +208,27 @@ export class Tower extends DurableObject<Env> {
 		plan.fork = name;
 		plan.base = head.hash;
 		this.broadcast({ type: "plan", plan: this.plan(plan.id) });
+	}
+
+	// Extend an active plan's claims. An in-flight plan gets the new paths only if nobody else
+	// holds them right now; otherwise nothing changes and the caller can retry once the
+	// blockers land. (Queued amendments, with deadlock detection, are a later step.)
+	private amend(id: string, raw?: string[]) {
+		if (!raw?.length) throw new Error("claims are required");
+		const plan = this.plan(id);
+		if (plan.status !== "cleared" && plan.status !== "holding") throw new Error(`plan ${id} is ${plan.status}`);
+		const claims = [...plan.claims];
+		for (const c of raw.map(parseClaim)) if (!claims.some((x) => x.path === c.path)) claims.push(c);
+		const blockedBy = this.blockers(claims, plan.createdAt, id);
+
+		if (plan.status === "cleared" && blockedBy.length) return { granted: false, blockedBy, plan };
+		const status: Status = blockedBy.length ? "holding" : "cleared";
+		this.sql.exec(
+			"UPDATE plans SET claims = ?, status = ?, blocked_by = ? WHERE id = ?",
+			JSON.stringify(claims), status, JSON.stringify(blockedBy), id,
+		);
+		this.broadcast({ type: "plan", plan: this.plan(id) });
+		return { granted: true, blockedBy, plan: this.plan(id) };
 	}
 
 	private async release(id: string) {

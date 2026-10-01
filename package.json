@@ -17,6 +17,9 @@
     "wrangler": "^4.145.0"
   },
   "dependencies": {
-    "isomorphic-git": "^1.42.6"
+    "@modelcontextprotocol/server": "^2.0.0",
+    "agents": "^0.24.0",
+    "isomorphic-git": "^1.42.6",
+    "zod": "^4.6.5"
   }
 }
