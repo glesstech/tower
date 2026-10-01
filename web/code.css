@@ -1,0 +1,58 @@
+/* The code explorer (code.html). Palette and base styles come from styles.css. */
+
+main.code { flex: 1; min-height: 0; display: grid; grid-template-columns: 280px 1fr 380px; gap: 10px; padding: 10px; }
+main.code > nav, main.code > section, aside section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; min-height: 0; }
+h2 { margin: 0 0 6px; font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
+h2 code { float: right; text-transform: none; color: var(--dim); }
+.none { color: #484f58; font-size: 11px; }
+
+#files { padding: 8px 6px 8px 10px; overflow: auto; }
+#tree details { margin-left: 10px; }
+#tree > details { margin-left: 0; }
+#tree summary { cursor: pointer; list-style: none; }
+#tree summary::before { content: "▸ "; color: var(--dim); }
+#tree details[open] > summary::before { content: "▾ "; }
+#tree a { display: flex; align-items: center; gap: 4px; padding: 1px 4px; border-radius: 4px; text-decoration: none; white-space: nowrap; }
+#tree summary a { display: inline-flex; }
+#tree > a, #tree details > a { margin-left: 14px; }
+#tree a:hover { background: rgba(255,255,255,.05); }
+#tree a.open { background: var(--line); }
+.badge { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; border: 2px solid; }
+.badge.cleared { background: currentColor; }
+.badge.holding { border-style: dashed; }
+
+#view { display: flex; flex-direction: column; overflow: hidden; }
+#view header { display: flex; align-items: baseline; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+#view h1 { margin: 0; font-size: 14px; font-weight: 600; font-family: var(--mono); }
+#view h1 a { text-decoration: none; color: var(--dim); }
+#view h1 a:hover { color: var(--text); }
+#meta { color: var(--dim); font-size: 11px; margin-left: auto; }
+#body { flex: 1; overflow: auto; }
+#body .note { padding: 12px; color: var(--dim); }
+table.src { border-collapse: collapse; font: 12px/1.5 var(--mono); width: 100%; }
+table.src td { padding: 0 12px; white-space: pre; vertical-align: top; }
+table.src td.n { width: 1%; text-align: right; color: #484f58; user-select: none; border-right: 1px solid var(--line); }
+ul.listing { list-style: none; margin: 0; padding: 8px 12px; font-family: var(--mono); }
+ul.listing li { padding: 2px 0; display: flex; align-items: center; gap: 6px; }
+ul.listing a { text-decoration: none; }
+ul.listing a:hover { text-decoration: underline; }
+
+#why { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+aside section { padding: 8px 10px; overflow: auto; }
+#airspace { flex: 0 1 auto; max-height: 35%; }
+#history { flex: 1; }
+.plan { border-left: 3px solid; padding: 3px 0 3px 8px; margin-bottom: 6px; }
+.plan b { font-size: 12px; }
+.plan div { color: var(--dim); font-size: 11px; }
+.land { position: relative; border-left: 3px solid; padding: 2px 0 8px 10px; margin-bottom: 4px; }
+.land .sum { font-weight: 600; }
+.land .by { color: var(--dim); font-size: 11px; margin: 2px 0; }
+.land .by b { font-weight: 600; }
+.land .by a { margin-left: 6px; }
+.land .task { font-size: 12px; color: var(--dim); }
+.land .paths { font: 10px var(--mono); color: var(--dim); }
+.land details { margin-top: 4px; font-size: 11px; }
+.land summary { cursor: pointer; color: var(--dim); }
+.land dl { margin: 4px 0 0; }
+.land dt { color: var(--dim); text-transform: uppercase; font-size: 10px; letter-spacing: .05em; margin-top: 4px; }
+.land dd { margin: 0; white-space: pre-wrap; word-break: break-word; }

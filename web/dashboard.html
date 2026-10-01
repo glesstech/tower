@@ -13,19 +13,31 @@
 	<header>
 		<h1>tower <small id="repo"></small></h1>
 		<span id="conn">connecting</span>
+		<nav class="views"><a id="v-ops">Operator</a><a id="v-map">Map</a></nav>
+		<div class="replay">
+			<button id="r-play" title="Load this trunk's event log and play it back">Replay</button>
+			<select id="r-speed" title="Replay speed"><option value="1">1×</option><option value="4" selected>4×</option><option value="16">16×</option><option value="64">64×</option></select>
+			<button id="r-stop" hidden>Back to live</button>
+			<span id="r-status"></span>
+			<button id="r-save" title="Download the event log, to replay after the trunk is gone">Save log</button>
+			<label class="load" title="Replay a downloaded event log">Load log<input id="r-load" type="file" accept="application/json,.json" hidden></label>
+		</div>
 		<div class="counters">
 			<div class="counter" id="c-conflicts_prevented"><b>0</b><span>conflicts prevented</span></div>
 			<div class="counter" id="c-drift_blocked"><b>0</b><span>drift blocked</span></div>
+			<div class="counter" id="c-deadlocks_prevented"><b>0</b><span>deadlocks prevented</span></div>
 			<div class="counter" id="c-landed"><b>0</b><span>landed</span></div>
 		</div>
 	</header>
-	<div id="map"><div id="tree"></div><div id="overlay"></div><div id="empty">waiting for trunk…</div></div>
-	<aside>
+	<div id="ops">
 		<section id="flying"><h2>In flight</h2><div></div></section>
 		<section id="holding"><h2>Holding</h2><div></div></section>
+		<section id="lands"><h2>Landed</h2><div></div></section>
 		<section id="log"><h2>Events</h2><div></div></section>
-	</aside>
+	</div>
+	<div id="map"><div id="tree"></div><div id="overlay"></div><div id="legend"></div><div id="empty">No trunk yet. Start a swarm or sim to see activity.</div></div>
 	<div id="timeline"><h2>Trunk</h2><div id="trunk"></div></div>
+	<div id="why" hidden><div class="why-head"><h2>Why <code id="why-path"></code></h2><button id="why-close" title="Close">✕</button></div><div id="why-body"></div></div>
 </main>
 </body>
 </html>

@@ -9,6 +9,7 @@ import {
 	type Core,
 	deleteRepo,
 	json,
+	leaseTtl,
 	type Plan,
 	type PlanRow,
 	plan as getPlan,
@@ -18,22 +19,25 @@ import {
 	type Status,
 	toPlan,
 } from "./core";
-import { broadcast, bump } from "./events";
+import { bump, emitPlan } from "./events";
 
 const TOKEN_TTL = 3600;
 
-export async function file(t: Core, body: { agent?: string; task?: string; claims?: string[] }) {
+export async function file(t: Core, body: { agent?: string; task?: string; claims?: string[]; ttl?: number }) {
 	if (!body.agent || !body.task || !body.claims?.length) throw new Error("agent, task and claims are required");
 	const claims = body.claims.map(parseClaim);
+	const ttl = leaseTtl(body.ttl);
 	const id = crypto.randomUUID().slice(0, 8);
-	const blockedBy = blockers(t, claims, Date.now());
+	const now = Date.now();
+	const blockedBy = blockers(t, claims, now);
 	const next: Status = blockedBy.length ? "holding" : "cleared";
 	t.sql.exec(
-		"INSERT INTO plans (id, agent, task, claims, status, blocked_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		id, body.agent, body.task, JSON.stringify(claims), next, JSON.stringify(blockedBy), Date.now(),
+		"INSERT INTO plans (id, agent, task, claims, status, blocked_by, created_at, last_seen_at, ttl) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		id, body.agent, body.task, JSON.stringify(claims), next, JSON.stringify(blockedBy), now, now, ttl,
 	);
 	if (blockedBy.length) bump(t, "conflicts_prevented");
-	broadcast(t, { type: "plan", plan: getPlan(t, id) });
+	emitPlan(t, "filed", id);
+	emitPlan(t, next, id, next === "holding" ? { blockedBy } : {});
 	return status(t, id);
 }
 
@@ -96,11 +100,11 @@ async function forkFor(t: Core, plan: Plan) {
 		return commit;
 	});
 	t.sql.exec("UPDATE plans SET fork = ?, base = ? WHERE id = ?", name, head.hash, plan.id);
-	// Released while the fork was being made: nobody will land it, so don't leave it behind.
-	if (getPlan(t, plan.id).status !== "cleared") await deleteRepo(t, name);
 	plan.fork = name;
 	plan.base = head.hash;
-	broadcast(t, { type: "plan", plan: getPlan(t, plan.id) });
+	// Released while the fork was being made: nobody will land it, so don't leave it behind.
+	if (getPlan(t, plan.id).status !== "cleared") await deleteRepo(t, name);
+	else emitPlan(t, "provisioned", plan.id, { fork: name, base: head.hash });
 }
 
 // Extend an active plan's claims. New paths nobody else holds are granted at once. A holding
@@ -123,13 +127,14 @@ export function amend(t: Core, id: string, raw?: string[]): Response {
 			"UPDATE plans SET claims = ?, status = ?, blocked_by = ? WHERE id = ?",
 			JSON.stringify(claims), status, JSON.stringify(blockedBy), id,
 		);
-		broadcast(t, { type: "plan", plan: getPlan(t, id) });
+		emitPlan(t, "amended", id, { added: added.map((c) => c.path) });
+		emitPlan(t, status, id, status === "holding" ? { blockedBy } : {});
 		return json({ granted: true, blockedBy, plan: getPlan(t, id) });
 	}
 
 	if (!blockers(t, added, 0, id).length) {
 		t.sql.exec("UPDATE plans SET claims = ? WHERE id = ?", JSON.stringify([...plan.claims, ...added]), id);
-		broadcast(t, { type: "plan", plan: getPlan(t, id) });
+		emitPlan(t, "amended", id, { added: added.map((c) => c.path) });
 		return json({ granted: true, blockedBy: [], plan: getPlan(t, id) });
 	}
 
@@ -141,14 +146,17 @@ export function amend(t: Core, id: string, raw?: string[]): Response {
 	const found = cycle(t, id, blockedBy);
 	if (found) {
 		bump(t, "deadlocks_prevented");
+		emitPlan(t, "deadlock", id, { paths: added.map((c) => c.path), blockedBy, cycle: found });
 		const error = `deadlock: ${found.join(" -> ")}; finish without these paths, or land or release first`;
 		return json({ granted: false, error, deadlock: found, blockedBy, plan }, 409);
 	}
 	const amendment: Amendment = { claims, blockedBy, requestedAt: plan.amendment?.requestedAt ?? Date.now() };
 	t.sql.exec("UPDATE plans SET amendment = ? WHERE id = ?", JSON.stringify(amendment), id);
 	// Agents poll by asking again; count an amendment once, not once per poll.
-	if (claims.length > (plan.amendment?.claims.length ?? 0)) bump(t, "amendments_held");
-	broadcast(t, { type: "plan", plan: getPlan(t, id) });
+	if (claims.length > (plan.amendment?.claims.length ?? 0)) {
+		bump(t, "amendments_held");
+		emitPlan(t, "amendment_held", id, { paths: claims.map((c) => c.path), blockedBy });
+	}
 	return json({ granted: false, held: true, blockedBy, plan: getPlan(t, id) });
 }
 
@@ -180,6 +188,7 @@ export async function release(t: Core, id: string) {
 	return serial(t, async () => {
 		const plan = getPlan(t, id);
 		if (plan.status === "landed") throw new Error("plan already landed");
+		if (plan.status === "expired") return { plan }; // already released by its lease running out
 		await close(t, plan, "released");
 		return { plan: getPlan(t, id) };
 	});
@@ -187,12 +196,13 @@ export async function release(t: Core, id: string) {
 
 // Free a plan's airspace, then grant held amendments (in-flight agents first, oldest request
 // first) and clear whichever holding plans no longer have blockers.
-export async function close(t: Core, plan: Plan, status: "landed" | "released") {
+export async function close(t: Core, plan: Plan, status: "landed" | "released" | "expired", data: Record<string, unknown> = {}) {
 	t.sql.exec("UPDATE plans SET status = ?, amendment = NULL WHERE id = ?", status, plan.id);
+	// Logged before the await below, so nothing filed meanwhile is ordered ahead of it.
+	emitPlan(t, status, plan.id, data);
 	// A landed fork's changes now live on trunk (and the commit trailers keep its name),
 	// so the fork and its tokens go away rather than accumulating storage.
 	if (plan.fork) await deleteRepo(t, plan.fork);
-	broadcast(t, { type: "plan", plan: getPlan(t, plan.id) });
 
 	const amending = t.sql
 		.exec<PlanRow>("SELECT * FROM plans WHERE status = 'cleared' AND amendment IS NOT NULL")
@@ -209,14 +219,19 @@ export async function close(t: Core, plan: Plan, status: "landed" | "released") 
 		}
 		const claims = merge(p.claims, p.amendment.claims);
 		t.sql.exec("UPDATE plans SET claims = ?, amendment = NULL WHERE id = ?", JSON.stringify(claims), id);
-		broadcast(t, { type: "plan", plan: getPlan(t, id) });
+		emitPlan(t, "amended", id, { added: p.amendment.claims.map((c) => c.path) });
 	}
 
 	for (const row of t.sql.exec<PlanRow>("SELECT * FROM plans WHERE status = 'holding' ORDER BY created_at").toArray()) {
 		const blockedBy = blockers(t, JSON.parse(row.claims), row.created_at, row.id);
 		const next: Status = blockedBy.length ? "holding" : "cleared";
 		t.sql.exec("UPDATE plans SET status = ?, blocked_by = ? WHERE id = ?", next, JSON.stringify(blockedBy), row.id);
-		if (next === "cleared") broadcast(t, { type: "plan", plan: getPlan(t, row.id) });
+		if (next === "cleared") {
+			// Its lease starts now: an agent that waited in line shouldn't expire the moment it clears.
+			t.sql.exec("UPDATE plans SET last_seen_at = ? WHERE id = ?", Date.now(), row.id);
+			emitPlan(t, "cleared", row.id);
+		}
+		else if (JSON.stringify(blockedBy) !== row.blocked_by) emitPlan(t, "holding", row.id, { blockedBy });
 	}
 }
 

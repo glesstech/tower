@@ -1,4 +1,4 @@
-import { env, runInDurableObject } from "cloudflare:test";
+import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import type { Tower } from "../../src/tower";
 import { FakeArtifacts, type Snapshot } from "../fake-artifacts";
@@ -374,6 +374,42 @@ describe("dashboard", () => {
 		expect((await t.call("GET", "/tree")).body.paths).toContain("src/c.ts");
 	});
 
+	it("reads a file's contents on trunk HEAD for the code explorer", async () => {
+		const t = await tower();
+		const trunk = t.artifacts.repos.get(REPO)!;
+		const res = await t.call("GET", "/blob?path=src/a.ts");
+		expect(res.status).toBe(200);
+		expect(res.body).toMatchObject({ head: await trunk.head(), path: "src/a.ts", size: 2, binary: false, text: "a\n" });
+
+		await trunk.commit({ ...SEED, "src/a.ts": "a2\n", "img.bin": "\0\x01\x02" }, "change a");
+		expect((await t.call("GET", "/blob?path=src/a.ts")).body.text).toBe("a2\n");
+		expect((await t.call("GET", "/blob?path=img.bin")).body).toMatchObject({ binary: true, text: null });
+
+		expect((await t.call("GET", "/blob?path=src/missing.ts")).status).toBe(404);
+		expect((await t.call("GET", "/blob?path=src")).status).toBe(404);
+		expect((await t.call("GET", "/blob?path=README.md/x")).status).toBe(404);
+		for (const bad of ["", "/src/a.ts", "src/../README.md", "src//a.ts"]) {
+			expect((await t.call("GET", `/blob?path=${encodeURIComponent(bad)}`)).status).toBe(400);
+		}
+	});
+
+	it("returns a path's whole history from /why with ?limit=", async () => {
+		const t = await tower();
+		for (let i = 0; i < 22; i++) {
+			await runInDurableObject(t.stub, (instance: Tower) => {
+				const sql = (instance as any).sql as SqlStorage;
+				const sha = String(i).padStart(40, "0");
+				sql.exec("INSERT INTO lands VALUES (?, ?, 'a', 'task', 'summary', 'null', ?)", sha, `p${i}`, i);
+				sql.exec("INSERT INTO land_paths VALUES (?, 'src/a.ts')", sha);
+			});
+		}
+		expect((await t.call("GET", "/why?path=src/a.ts")).body).toHaveLength(20);
+		const all = (await t.call("GET", "/why?path=src/a.ts&limit=1000")).body as unknown as { plan_id: string }[];
+		expect(all).toHaveLength(22);
+		expect(all[0].plan_id).toBe("p21");
+		expect((await t.call("GET", "/why?path=src/&limit=3")).body).toHaveLength(3);
+	});
+
 	it("includes each land's paths in the state snapshot", async () => {
 		const t = await tower();
 		const a = await t.file("a", ["src/a.ts"]);
@@ -382,5 +418,236 @@ describe("dashboard", () => {
 		const state = (await t.call("GET", "/state")).body;
 		expect(state.lands).toEqual([expect.objectContaining({ sha: LANDED_SHA, agent: "a", paths: ["src/a.ts"] })]);
 		expect(state.stats.landed).toBe(1);
+	});
+});
+
+describe("event log", () => {
+	const history = async (t: Awaited<ReturnType<typeof tower>>, query = "") => (await t.call("GET", `/events${query}`)).body;
+
+	// Open /live as a client would and collect what it is sent.
+	const connect = async (t: Awaited<ReturnType<typeof tower>>, query = "") => {
+		const res = await t.stub.fetch(`https://tower/live${query}`, { headers: { Upgrade: "websocket", "X-Tower-Repo": REPO } });
+		const ws = res.webSocket!;
+		const got: Body[] = [];
+		ws.addEventListener("message", (e) => {
+			got.push(JSON.parse(e.data as string));
+		});
+		ws.accept();
+		const settle = () => new Promise((r) => setTimeout(r, 20));
+		await settle();
+		return { got, settle, close: () => ws.close() };
+	};
+
+	it("records a run's full ordered history: filed, holding, cleared, amended, drift, landed, released", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/a.ts"]);
+		const b = await t.file("b", ["src/a.ts"]);
+		await t.call("POST", `/plans/${a.plan.id}/amend`, { claims: ["docs/"] });
+		await t.push(a.plan.id, { ...SEED, "src/a.ts": "a2\n", "README.md": "drifted\n" });
+		expect((await t.call("POST", `/plans/${a.plan.id}/land`, { summary: "change a" })).status).toBe(409);
+		await t.push(a.plan.id, { ...SEED, "src/a.ts": "a2\n" });
+		expect((await t.call("POST", `/plans/${a.plan.id}/land`, { summary: "change a" })).status).toBe(200);
+		await t.plan(b.plan.id);
+		await t.call("POST", `/plans/${b.plan.id}/release`);
+
+		const { events, last } = await history(t);
+		const seqs = events.map((e: Body) => e.seq);
+		expect(seqs).toEqual([...seqs].sort((x, y) => x - y));
+		expect(new Set(seqs).size).toBe(seqs.length);
+		expect(last).toBe(seqs.at(-1));
+
+		const lifecycle = events.filter((e: Body) => e.type !== "stat").map((e: Body) => `${e.agent}:${e.type}`);
+		expect(lifecycle).toEqual([
+			"a:filed", "a:cleared", "a:provisioned",
+			"b:filed", "b:holding",
+			"a:amended",
+			"a:drift",
+			"a:landed", "b:cleared",
+			"b:provisioned",
+			"b:released",
+		]);
+		const find = (agent: string, type: string) => events.find((e: Body) => e.agent === agent && e.type === type);
+		expect(find("b", "holding")).toMatchObject({ planId: b.plan.id, blockedBy: [a.plan.id], plan: { status: "holding" } });
+		expect(find("a", "amended")).toMatchObject({ added: ["docs/"] });
+		expect(find("a", "drift")).toMatchObject({ planId: a.plan.id, paths: ["README.md"], blocked: true });
+		expect(find("a", "landed")).toMatchObject({ sha: LANDED_SHA, summary: "change a", paths: ["src/a.ts"], plan: { status: "landed" } });
+		expect(find("b", "released")).toMatchObject({ plan: { status: "released" } });
+		expect(events.filter((e: Body) => e.type === "stat").map((e: Body) => e.key)).toEqual(["conflicts_prevented", "drift_blocked", "landed"]);
+	});
+
+	it("pages with since= and limit=, and filters by plan", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/a.ts"]);
+		await t.file("b", ["src/a.ts"]);
+		await t.call("POST", `/plans/${a.plan.id}/release`);
+		const all = (await history(t)).events;
+		expect(all.length).toBeGreaterThan(5);
+
+		const paged: Body[] = [];
+		let since = 0;
+		for (;;) {
+			const page = await history(t, `?since=${since}&limit=2`);
+			if (!page.events.length) break;
+			expect(page.events.length).toBeLessThanOrEqual(2);
+			paged.push(...page.events);
+			since = page.last;
+		}
+		expect(paged).toEqual(all);
+		expect((await history(t, `?since=${since}`)).last).toBe(since);
+
+		const forA = (await history(t, `?plan=${a.plan.id}`)).events;
+		expect(forA.map((e: Body) => e.type)).toEqual(["filed", "cleared", "provisioned", "released"]);
+		expect(forA.every((e: Body) => e.planId === a.plan.id)).toBe(true);
+	});
+
+	it("records refused deadlocks and held amendments once", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/a.ts"]);
+		const b = await t.file("b", ["src/b.ts"]);
+		await t.call("POST", `/plans/${a.plan.id}/amend`, { claims: ["src/b.ts"] });
+		await t.call("POST", `/plans/${a.plan.id}/amend`, { claims: ["src/b.ts"] });
+		await t.call("POST", `/plans/${b.plan.id}/amend`, { claims: ["src/a.ts"] });
+		const events = (await history(t)).events;
+		expect(events.filter((e: Body) => e.type === "amendment_held")).toEqual([
+			expect.objectContaining({ planId: a.plan.id, paths: ["src/b.ts"], blockedBy: [b.plan.id] }),
+		]);
+		expect(events.find((e: Body) => e.type === "deadlock")).toMatchObject({
+			planId: b.plan.id, paths: ["src/a.ts"], cycle: [b.plan.id, a.plan.id, b.plan.id],
+		});
+	});
+
+	it("streams live events with their seq, and catches a reconnecting client up with since=", async () => {
+		const t = await tower();
+		const first = await connect(t);
+		expect(first.got).toEqual([expect.objectContaining({ type: "state", state: expect.objectContaining({ seq: 0 }) })]);
+		const a = await t.file("a", ["src/a.ts"]);
+		await first.settle();
+		const live = first.got.slice(1);
+		expect(live.map((e) => e.type)).toEqual(["filed", "cleared", "provisioned"]);
+		expect(live).toEqual((await history(t)).events);
+		first.close();
+
+		// Missed while disconnected.
+		await t.file("b", ["src/a.ts"]);
+		await t.call("POST", `/plans/${a.plan.id}/release`);
+		const missed = (await history(t, `?since=${live.at(-1)!.seq}`)).events;
+		expect(missed.length).toBeGreaterThan(0);
+
+		const again = await connect(t, `?since=${live.at(-1)!.seq}`);
+		expect(again.got).toEqual(missed);
+		again.close();
+
+		// A seq from before a reset (or otherwise unknown) gets a fresh snapshot instead.
+		const stale = await connect(t, "?since=99999");
+		expect(stale.got).toEqual([expect.objectContaining({ type: "state" })]);
+		stale.close();
+	});
+
+	it("clears the log on DELETE", async () => {
+		const t = await tower();
+		await t.file("a", ["src/a.ts"]);
+		expect((await history(t)).events.length).toBeGreaterThan(0);
+		await t.call("DELETE", "/");
+		expect((await history(t)).events).toEqual([]);
+	});
+});
+
+describe("leases", () => {
+	// Time passing for a plan: move its last_seen_at back, as if its agent had been silent that long.
+	const silence = (t: Awaited<ReturnType<typeof tower>>, id: string, seconds: number) =>
+		runInDurableObject(t.stub, (instance: Tower) => {
+			const sql = (instance as any).sql as SqlStorage;
+			sql.exec("UPDATE plans SET last_seen_at = ? WHERE id = ?", Date.now() - seconds * 1000, id);
+		});
+	const alarmAt = (t: Awaited<ReturnType<typeof tower>>) => runInDurableObject(t.stub, (_: Tower, state) => state.storage.getAlarm());
+
+	it("expires a silent cleared plan: deletes its fork, frees its claims and clears the next plan", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/"]);
+		const b = await t.file("b", ["src/a.ts"]);
+		expect(a.plan).toMatchObject({ status: "cleared", ttl: 900 });
+		expect(b.plan.status).toBe("holding");
+		const scheduled = await alarmAt(t);
+		expect(scheduled).toBeGreaterThan(Date.now() + 890_000);
+		expect(scheduled).toBeLessThanOrEqual(Date.now() + 900_000);
+
+		// Before the TTL the alarm does nothing.
+		await silence(t, a.plan.id, 600);
+		expect(await runDurableObjectAlarm(t.stub)).toBe(true);
+		expect((await t.call("GET", "/state")).body.plans.map((p: Body) => p.id)).toEqual([a.plan.id, b.plan.id]);
+
+		await silence(t, a.plan.id, 901);
+		expect(await runDurableObjectAlarm(t.stub)).toBe(true);
+
+		const state = (await t.call("GET", "/state")).body;
+		expect(state.stats.leases_expired).toBe(1);
+		expect(state.plans).toEqual([expect.objectContaining({ id: b.plan.id, status: "cleared" })]);
+		expect(t.artifacts.repos.has(a.plan.fork)).toBe(false);
+		const expired = (await t.call("GET", `/events?plan=${a.plan.id}`)).body.events.at(-1);
+		expect(expired).toMatchObject({ type: "expired", agent: "a", ttl: 900, plan: { status: "expired" } });
+		expect(expired.silentFor).toBeGreaterThanOrEqual(901_000);
+
+		// The plan that took off gets a full lease of its own and its fork; the expired one stays closed.
+		const b2 = await t.call("GET", `/plans/${b.plan.id}`);
+		expect(b2.body.fork.name).toBe(`${REPO}--${b.plan.id}`);
+		expect(await alarmAt(t)).toBeGreaterThan(Date.now() + 890_000);
+		expect((await t.call("GET", `/plans/${a.plan.id}`)).body.plan.status).toBe("expired");
+		expect((await t.call("POST", `/plans/${a.plan.id}/heartbeat`)).status).toBe(400);
+		expect((await t.call("POST", `/plans/${a.plan.id}/land`, { summary: "late" })).status).toBe(400);
+		expect((await t.call("POST", `/plans/${a.plan.id}/release`)).body.plan.status).toBe("expired");
+	});
+
+	it("heartbeats, polls and checks keep a long-running plan alive", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/a.ts"]);
+
+		for (const beat of [
+			() => t.call("POST", `/plans/${a.plan.id}/heartbeat`),
+			() => t.call("GET", `/plans/${a.plan.id}`),
+			() => t.call("POST", `/plans/${a.plan.id}/check`),
+		]) {
+			// Hours of work in all, but never 15 minutes without a word.
+			await silence(t, a.plan.id, 840);
+			const res = await beat();
+			expect(res.status).toBe(200);
+			expect(await runDurableObjectAlarm(t.stub)).toBe(true);
+			expect((await t.plan(a.plan.id)).status).toBe("cleared");
+		}
+		const beat = await t.call("POST", `/plans/${a.plan.id}/heartbeat`);
+		expect(beat.body.expiresAt).toBeGreaterThan(Date.now() + 890_000);
+
+		// The same silence without a heartbeat in between expires it.
+		await silence(t, a.plan.id, 901);
+		await runDurableObjectAlarm(t.stub);
+		expect((await t.call("GET", `/plans/${a.plan.id}`)).body.plan.status).toBe("expired");
+	});
+
+	it("takes a per-plan TTL on filing, capped", async () => {
+		const t = await tower();
+		expect((await t.file("a", ["src/a.ts"])).plan.ttl).toBe(900);
+		const short = await t.call("POST", "/plans", { agent: "b", task: "t", claims: ["src/b.ts"], ttl: 5 });
+		expect(short.body.plan.ttl).toBe(60);
+		const long = await t.call("POST", "/plans", { agent: "c", task: "t", claims: ["docs/"], ttl: 999_999 });
+		expect(long.body.plan.ttl).toBe(3600);
+		expect((await t.call("POST", "/plans", { agent: "d", task: "t", claims: ["x"], ttl: "soon" })).status).toBe(400);
+
+		await silence(t, short.body.plan.id, 61);
+		await runDurableObjectAlarm(t.stub);
+		const plans = (await t.call("GET", "/state")).body.plans.map((p: Body) => p.agent);
+		expect(plans).toEqual(["a", "c"]);
+	});
+
+	it("does not expire a holding plan, and starts its lease when it clears", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/"]);
+		const b = await t.file("b", ["src/a.ts"]);
+		await silence(t, b.plan.id, 5000);
+		await runDurableObjectAlarm(t.stub);
+		expect((await t.plan(b.plan.id)).status).toBe("holding");
+
+		await silence(t, b.plan.id, 5000);
+		await t.call("POST", `/plans/${a.plan.id}/release`);
+		await runDurableObjectAlarm(t.stub);
+		expect((await t.plan(b.plan.id)).status).toBe("cleared");
 	});
 });
