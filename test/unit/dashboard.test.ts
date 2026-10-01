@@ -12,11 +12,13 @@ describe("access", () => {
 		expect(access(keys, "op", get("/mcp"))).toBe("operator");
 	});
 
-	it("lets the dashboard key watch: live feed, state, events and tree", () => {
+	it("lets the dashboard key watch: live feed, state, events, tree, blob and why", () => {
 		expect(access(keys, "view", get("/live", true))).toBe("dashboard");
 		expect(access(keys, "view", get("/state"))).toBe("dashboard");
 		expect(access(keys, "view", get("/events"))).toBe("dashboard");
 		expect(access(keys, "view", get("/tree"))).toBe("dashboard");
+		expect(access(keys, "view", get("/blob"))).toBe("dashboard");
+		expect(access(keys, "view", get("/why"))).toBe("dashboard");
 	});
 
 	it("keeps the dashboard key away from everything else", () => {
@@ -25,7 +27,8 @@ describe("access", () => {
 		expect(access(keys, "view", { method: "POST", rest: "/init", websocket: false })).toBeNull();
 		expect(access(keys, "view", { method: "DELETE", rest: "/", websocket: false })).toBeNull();
 		expect(access(keys, "view", get("/mcp"))).toBeNull();
-		expect(access(keys, "view", get("/why"))).toBeNull();
+		expect(access(keys, "view", { method: "POST", rest: "/blob", websocket: false })).toBeNull();
+		expect(access(keys, "view", get("/blob", true))).toBeNull();
 		expect(access(keys, "view", get("/plans/abc"))).toBeNull();
 		// The Tower answers any upgrade with the live feed, so only /live may upgrade.
 		expect(access(keys, "view", get("/state", true))).toBeNull();
@@ -50,7 +53,7 @@ describe("pageAsset", () => {
 	});
 
 	it("never shadows the API", () => {
-		for (const rest of ["/state", "/events", "/tree", "/why", "/live", "/mcp"]) expect(pageAsset(get(rest))).toBeNull();
+		for (const rest of ["/state", "/events", "/tree", "/blob", "/why", "/live", "/mcp"]) expect(pageAsset(get(rest))).toBeNull();
 		expect(pageAsset(get("/dashboard", true))).toBeNull();
 		expect(pageAsset({ method: "POST", rest: "/plans", websocket: false })).toBeNull();
 		expect(pageAsset({ method: "DELETE", rest: "/", websocket: false })).toBeNull();
