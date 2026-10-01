@@ -17,7 +17,7 @@ TOWER_URL=https://tower-dev.g12r.workers.dev TOWER_API_KEY=$(cut -d= -f2 .dev.va
 - By default the swarm starts more of the agent that launched it: from Claude Code you get Claude Code agents, from opencode you get opencode agents. `--agent claude,opencode` picks explicitly and deals tasks out round-robin. Agents are defined in `swarm/agents.json`.
 - Use `tower-dev` (above) for anything experimental. Use the production URL only for recorded demo runs.
 
-When it finishes, report the summary table (what landed, what didn't), the PR link, and where the logs are (`swarm-logs/`).
+A run takes roughly 10–30 minutes (each agent installs dependencies, codes, checks and lands), longer than most agents' shell-command time limits. Run it as a background command, wait for it to finish, then report the summary table (what landed, what didn't), the PR link, and where the logs are (`swarm-logs/`).
 
 **If you are a swarm agent** (your prompt says you are one of several agents coordinating through the tower MCP tools), never run the swarm. Do your one task and follow the tower server's instructions.
 
