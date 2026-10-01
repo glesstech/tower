@@ -89,6 +89,7 @@ export class Tower extends DurableObject<Env> {
 			}
 			return json({ error: "not found" }, 404);
 		} catch (err) {
+			console.error(`${request.method} ${url.pathname}:`, err);
 			return json({ error: (err as Error).message }, 400);
 		}
 	}
@@ -133,11 +134,19 @@ export class Tower extends DurableObject<Env> {
 			.map((r) => r.id);
 	}
 
-	// Cleared plans get a fork and a fresh fork-scoped write token on each poll.
+	// Cleared plans get a fork and a fresh fork-scoped write token on each poll. A failed
+	// provision still returns the plan, so the agent keeps its id and the next poll retries.
 	private async status(id: string) {
 		const plan = this.plan(id);
 		if (plan.status !== "cleared") return { plan };
-		if (!plan.fork) await this.provision(plan);
+		if (!plan.fork) {
+			try {
+				await this.provision(plan);
+			} catch (err) {
+				console.error(`provision ${id}:`, err);
+				return { plan, error: (err as Error).message };
+			}
+		}
 		using fork = await this.env.ARTIFACTS.get(this.plan(id).fork!);
 		const [info, token] = await Promise.all([fork.info(), fork.createToken("write", TOKEN_TTL)]);
 		return { plan: this.plan(id), fork: { name: info.name, remote: info.remote, token: token.plaintext } };
@@ -158,9 +167,18 @@ export class Tower extends DurableObject<Env> {
 		if (this.plan(plan.id).fork) return;
 		const name = `${this.repo()}--${plan.id}`;
 		using trunk = await this.env.ARTIFACTS.get(this.repo());
-		await trunk.fork(name, { description: `${plan.agent}: ${plan.task}` });
+		try {
+			await retry(() => trunk.fork(name, { description: `${plan.agent}: ${plan.task}` }));
+		} catch (err) {
+			// An earlier attempt may have created the fork before failing to record it.
+			if ((err as ArtifactsError).code !== "ALREADY_EXISTS") throw err;
+		}
 		using fork = await retry(() => this.env.ARTIFACTS.get(name));
-		const [head] = await fork.log({ limit: 1 });
+		const head = await retry(async () => {
+			const [commit] = await fork.log({ limit: 1 });
+			if (!commit) throw Object.assign(new Error(`fork ${name} has no commits yet`), { code: "FORK_IN_PROGRESS" });
+			return commit;
+		});
 		this.sql.exec("UPDATE plans SET fork = ?, base = ? WHERE id = ?", name, head.hash, plan.id);
 		plan.fork = name;
 		plan.base = head.hash;
@@ -351,7 +369,8 @@ function json(data: unknown, status = 200): Response {
 	return Response.json(data, { status });
 }
 
-// A new fork is briefly unreadable (FORK_IN_PROGRESS) while Artifacts copies it.
+// A new fork is briefly unreadable (FORK_IN_PROGRESS) while Artifacts copies it, and a
+// trunk that is already being forked rejects another fork with the same code.
 async function retry<T>(fn: () => Promise<T>, attempts = 10): Promise<T> {
 	for (let i = 1; ; i++) {
 		try {

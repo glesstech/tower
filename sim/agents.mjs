@@ -58,13 +58,28 @@ async function seed(work) {
 
 async function agent(i, work) {
 	const name = `agent-${i}`;
-	const file = `src/modules/m${i % MODULES}.ts`;
+	const mod = `m${i % MODULES}`;
+	const file = `src/modules/${mod}.ts`;
 	const drifts = i < DRIFT;
 
 	let { body } = await api("POST", "/plans", { agent: name, task: `extend ${file}`, claims: [file] });
+	if (!body.plan) throw new Error(`${name} plan failed: ${JSON.stringify(body)}`);
 	const id = body.plan.id;
 	log(name, `plan ${id} ${body.plan.status}${body.plan.blockedBy.length ? ` behind ${body.plan.blockedBy}` : ""}`);
+	try {
+		await fly({ name, id, mod, file, drifts, body, work });
+	} catch (err) {
+		// Free the airspace so agents queued behind this one aren't stuck forever.
+		await api("POST", `/plans/${id}/release`).catch(() => {});
+		throw err;
+	}
+}
+
+async function fly({ name, id, mod, file, drifts, body, work }) {
+	const deadline = Date.now() + 120_000;
 	while (!body.fork) {
+		if (Date.now() > deadline) throw new Error(`${name} never got a fork: ${JSON.stringify(body)}`);
+		if (body.error) log(name, `provision retry: ${body.error}`);
 		await new Promise((r) => setTimeout(r, 500));
 		({ body } = await api("GET", `/plans/${id}`));
 	}
@@ -76,7 +91,7 @@ async function agent(i, work) {
 	const commit = (msg) =>
 		run("git", ["-c", `user.name=${name}`, "-c", `user.email=${name}@tower.local`, "commit", "-qam", msg], { cwd: dir });
 
-	await appendFile(join(dir, file), `m${i % MODULES}.push(${JSON.stringify(name)});\n`);
+	await appendFile(join(dir, file), `${mod}.push(${JSON.stringify(name)});\n`);
 	if (drifts) await appendFile(join(dir, "README.md"), `${name} was here\n`);
 	await commit(`${name}: extend ${file}`);
 	await git(dir, token, "push", "-q", "origin", "HEAD:main");
