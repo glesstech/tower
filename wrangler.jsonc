@@ -1,0 +1,20 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "tower",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "artifacts": [
+    {
+      "binding": "ARTIFACTS",
+      "namespace": "tower",
+      // Artifacts has no local emulator; use the real service in `wrangler dev`.
+      "remote": true
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "TOWER", "class_name": "Tower" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Tower"] }],
+  "observability": { "enabled": true }
+}

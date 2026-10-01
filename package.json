@@ -1,0 +1,21 @@
+{
+  "name": "tower",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types",
+    "typecheck": "tsc --noEmit",
+    "sim": "node sim/agents.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "wrangler": "^4.145.0"
+  },
+  "dependencies": {
+    "isomorphic-git": "^1.42.6"
+  }
+}
