@@ -6,6 +6,7 @@ interface __BaseEnv_Env {
 	ASSETS: Fetcher;
 	TOWER_API_KEY: string;
 	TOWER_DASHBOARD_KEY?: string;
+	TOWER_DEMO_REPO?: string;
 	TOWER: DurableObjectNamespace<import("./src/index").Tower>;
 }
 declare namespace Cloudflare {
@@ -18,6 +19,8 @@ declare namespace Cloudflare {
 		ASSETS: Fetcher;
 		TOWER_API_KEY: string;
 		TOWER_DASHBOARD_KEY?: string;
+		TOWER_DEMO_REPO?: string;
+	TOWER_DEMO_REPO?: string;
 		TOWER: DurableObjectNamespace<import("./src/index").Tower>;
 	}
 	interface Env extends __BaseEnv_Env {}

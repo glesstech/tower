@@ -1,0 +1,21 @@
+/* The home page (index.html). Palette and base styles come from styles.css. */
+
+main.home { flex: 1; width: 100%; max-width: 860px; margin: 0 auto; padding: 24px 20px 48px; font-size: 14px; line-height: 1.55; }
+main.home h1 { margin: 0 0 4px; font-size: 32px; }
+main.home h2 { margin: 32px 0 10px; font-size: 13px; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; }
+.lede { margin: 0 0 14px; font-size: 18px; color: var(--dim); }
+.links { display: flex; flex-wrap: wrap; gap: 10px; }
+.links a, a.button { display: inline-block; padding: 5px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); text-decoration: none; }
+.links a:hover, a.button:hover { border-color: var(--dim); }
+.links a.demo { border-color: var(--green); color: var(--green); }
+.dim { color: var(--dim); }
+
+#trunks table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+#trunks th, #trunks td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--line); }
+#trunks th { color: var(--dim); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+#trunks td.n { font-variant-numeric: tabular-nums; }
+#trunks td.go { text-align: right; white-space: nowrap; }
+#trunks td.go a { margin-left: 6px; padding: 2px 8px; }
+#trunks tr:last-child td { border-bottom: 0; }
+
+pre { margin: 0; padding: 12px 14px; overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; font: 12px/1.5 var(--mono); }

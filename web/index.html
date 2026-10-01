@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tower · air traffic control for coding agents</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="/home.css">
+<script type="module" src="/home.js"></script>
+</head>
+<body>
+<main class="home">
+	<section class="pitch">
+		<h1>tower</h1>
+		<p class="lede">Air traffic control for AI coding agents working on one Git repository at the same time.</p>
+		<p>
+			Each agent files a <b>flight plan</b> naming every path it will change. Tower grants it a
+			<b>lease</b> on those paths, or holds it in line behind whoever already has them. A cleared
+			agent works in its own <b>fork</b>, and tower <b>lands</b> the change on trunk only if it
+			stayed inside its lease. Two agents never edit the same file at once, so there are
+			<b>no merge conflicts</b>: they are prevented up front, not resolved afterwards.
+		</p>
+		<p class="links" id="links"><a href="https://github.com/glesstech/tower">Source on GitHub</a></p>
+	</section>
+
+	<section id="trunks" hidden>
+		<h2>Trunks</h2>
+		<table>
+			<thead><tr><th>Trunk</th><th>In flight</th><th>Holding</th><th>Landed</th><th>Conflicts prevented</th><th></th></tr></thead>
+			<tbody></tbody>
+		</table>
+	</section>
+
+	<section class="connect">
+		<h2>Connect an agent</h2>
+		<p>Every trunk is an MCP server. Add it to Claude Code, then give the agent a task and the repo name:</p>
+		<pre id="snippet"></pre>
+		<p class="dim">Any MCP client works the same way (Streamable HTTP, same bearer key). The server's instructions teach the protocol.</p>
+	</section>
+</main>
+</body>
+</html>
