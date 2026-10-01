@@ -81,7 +81,7 @@ TOWER_URL=https://tower-dev.<subdomain>.workers.dev TOWER_API_KEY=... \
   npm run swarm -- --repo tower-src --init --pr --issues 11,12 --task "Fix the typo in README.md"
 ```
 
-By default it starts more of whichever agent launched it: the nearest ancestor process that matches an agent's `detect` entry. Ask Claude Code to run it and you get Claude Code agents. `--agent a,b` mixes agents deliberately. `--init` creates the trunk from the current directory's HEAD. `--pr` fetches what landed into a `swarm/<timestamp>` branch, opens a GitHub PR with each agent's evidence (and `Closes #N` for landed issues), then tears the trunk down, so each run starts fresh from `main`. `--dry-run` prints the agent commands without running anything. `AGENTS.md` tells an agent working in this repo to dispatch multi-issue requests to the swarm.
+By default it starts more of whichever agent launched it: the nearest ancestor process that matches an agent's `detect` entry. Ask Claude Code to run it and you get Claude Code agents. `--agent a,b` mixes agents deliberately. `--init` creates the trunk from the current directory's HEAD. `--pr` fetches what landed into a `swarm/<timestamp>` branch, runs the `typecheck` and `test` npm scripts on the combined result (agents only check their own change, so a clash between disjoint claims shows up here; `--checks "<cmd>"` replaces them for repos that don't use npm), opens a GitHub PR with each agent's evidence and the combined check results (and `Closes #N` for landed issues), then tears the trunk down, so each run starts fresh from `main`. `--dry-run` prints the agent commands without running anything. `AGENTS.md` tells an agent working in this repo to dispatch multi-issue requests to the swarm.
 
 ## Running it
 

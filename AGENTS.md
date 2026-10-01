@@ -13,7 +13,7 @@ TOWER_URL=https://tower-dev.g12r.workers.dev TOWER_API_KEY=$(cut -d= -f2 .dev.va
 
 - `--issues` takes GitHub issue numbers; `--task "…"` adds free-text tasks (repeatable).
 - `--init` creates the `tower-src` trunk from this checkout's HEAD.
-- `--pr` fetches what landed into a `swarm/<timestamp>` branch, pushes it, opens a PR (with each agent's evidence, and `Closes #N` for landed issues), then tears the trunk down so the next run starts fresh from `main`. Always use `--init --pr` together.
+- `--pr` fetches what landed into a `swarm/<timestamp>` branch, runs the repo's `typecheck` and `test` npm scripts (or `--checks "<cmd>"`) on the combined result, pushes it, opens a PR (with each agent's evidence, the combined check results, and `Closes #N` for landed issues), then tears the trunk down so the next run starts fresh from `main`. Always use `--init --pr` together.
 - By default the swarm starts more of the agent that launched it: from Claude Code you get Claude Code agents, from opencode you get opencode agents. `--agent claude,opencode` picks explicitly and deals tasks out round-robin. Agents are defined in `swarm/agents.json`.
 - Use `tower-dev` (above) for anything experimental. Use the production URL only for recorded demo runs.
 
