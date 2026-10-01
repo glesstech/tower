@@ -74,14 +74,14 @@ Tested with Claude Code (Haiku) and opencode (Gemini 3.5 Flash) running concurre
 
 ## Swarm
 
-`npm run swarm` starts one agent per task, all coordinating through one trunk. It does no coordination itself: it builds each agent's prompt and MCP config, starts the agents listed in `swarm/agents.json` (argv templates, so any MCP-capable agent works), waits, reports what landed, and releases plans left by agents that didn't finish.
+`npm run swarm` starts one agent per task, all coordinating through one trunk. It does no coordination itself: it builds each agent's prompt and MCP config, starts agents from `swarm/agents.json` (argv templates, so any MCP-capable agent works), waits, reports what landed, and releases plans left by agents that didn't finish.
 
 ```sh
 TOWER_URL=https://tower-dev.<subdomain>.workers.dev TOWER_API_KEY=... \
   npm run swarm -- --repo tower-src --init --pr --issues 11,12 --task "Fix the typo in README.md"
 ```
 
-`--init` creates the trunk from the current directory's HEAD. `--pr` fetches what landed into a `swarm/<timestamp>` branch, opens a GitHub PR with each agent's evidence (and `Closes #N` for landed issues), then tears the trunk down, so each run starts fresh from `main`. `--dry-run` prints the agent commands without running anything. `AGENTS.md` tells an agent working in this repo to dispatch multi-issue requests to the swarm.
+By default it starts more of whichever agent launched it: the nearest ancestor process that matches an agent's `detect` entry. Ask Claude Code to run it and you get Claude Code agents. `--agent a,b` mixes agents deliberately. `--init` creates the trunk from the current directory's HEAD. `--pr` fetches what landed into a `swarm/<timestamp>` branch, opens a GitHub PR with each agent's evidence (and `Closes #N` for landed issues), then tears the trunk down, so each run starts fresh from `main`. `--dry-run` prints the agent commands without running anything. `AGENTS.md` tells an agent working in this repo to dispatch multi-issue requests to the swarm.
 
 ## Running it
 

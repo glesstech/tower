@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Start one agent per task, all coordinating through one tower trunk. The swarm does no
-// coordination itself: it builds prompts, starts whatever agents swarm/agents.json lists
-// (any agent with MCP support), waits, and reports what landed.
+// coordination itself: it builds prompts, starts agents from swarm/agents.json (any agent with
+// MCP support), waits, and reports what landed. By default it starts more of whichever agent
+// launched it (Claude Code → Claude Code agents); --agent a,b picks explicitly.
 //
 //   TOWER_URL=https://tower-dev.<subdomain>.workers.dev TOWER_API_KEY=... \
 //     npm run swarm -- --repo tower-src --issues 11,12 --task "Fix the typo in README.md"
@@ -113,9 +114,41 @@ function launch(agent, name, task, logDir, timeoutMs) {
 	});
 }
 
+// The agent that launched the swarm: the nearest ancestor process that is a known agent
+// (env vars alone are ambiguous, since a nested agent inherits its parent's), else an env marker.
+async function callingAgent(agents) {
+	let pid = process.ppid;
+	for (let depth = 0; depth < 32 && pid > 1; depth++) {
+		const { stdout } = await run("ps", ["-o", "ppid=,args=", "-p", String(pid)]).catch(() => ({ stdout: "" }));
+		const m = stdout.trim().match(/^(\d+)\s+(.*)$/);
+		if (!m) break;
+		// Match the executable, or the script it runs (e.g. "node /…/bin/opencode").
+		const names = m[2].split(/\s+/).slice(0, 2).map((t) => t.split("/").pop());
+		const hit = agents.find((a) => a.detect?.process?.some((p) => names.includes(p)));
+		if (hit) return { agent: hit, how: `launched from ${hit.name} (pid ${pid})` };
+		pid = Number(m[1]);
+	}
+	const hit = agents.find((a) => a.detect?.env?.some((v) => process.env[v]));
+	return hit ? { agent: hit, how: `env ${hit.detect.env.find((v) => process.env[v])}` } : null;
+}
+
+async function choosePool(agents) {
+	if (args.agent) {
+		const pool = args.agent.split(",").map((name) => {
+			const agent = agents.find((a) => a.name === name.trim());
+			if (!agent) throw new Error(`no agent named ${name} in ${args.config}`);
+			return agent;
+		});
+		return { pool, how: "--agent" };
+	}
+	const found = await callingAgent(agents);
+	if (found) return { pool: [found.agent], how: found.how };
+	return { pool: [agents[0]], how: `no calling agent detected; first in ${args.config}` };
+}
+
 const { agents } = JSON.parse(await readFile(resolve(args.config), "utf8"));
-const pool = args.agent ? agents.filter((a) => a.name === args.agent) : agents;
-if (!pool.length) throw new Error(`no agent named ${args.agent} in ${args.config}`);
+const { pool, how } = await choosePool(agents);
+log("swarm", `agents: ${pool.map((a) => a.name).join(", ")} (${how})`);
 
 const work = (await tasks()).map((task, i) => {
 	const agent = pool[i % pool.length];
