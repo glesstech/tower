@@ -71,6 +71,17 @@ claude mcp add --transport http tower https://tower-dev.<subdomain>.workers.dev/
 
 Tested with Claude Code (Haiku) and opencode (Gemini 3.5 Flash) running concurrently on one trunk. Both planned, cloned their forks, landed with evidence, and stayed inside their claims.
 
+## Swarm
+
+`npm run swarm` starts one agent per task, all coordinating through one trunk. It does no coordination itself: it builds each agent's prompt and MCP config, starts the agents listed in `swarm/agents.json` (argv templates, so any MCP-capable agent works), waits, reports what landed, and releases plans left by agents that didn't finish.
+
+```sh
+TOWER_URL=https://tower-dev.<subdomain>.workers.dev TOWER_API_KEY=... \
+  npm run swarm -- --repo tower-src --init --issues 11,12 --task "Fix the typo in README.md"
+```
+
+`--init` creates the trunk from the current directory's HEAD. `--dry-run` prints the agent commands without running anything. `AGENTS.md` tells an agent working in this repo to dispatch multi-issue requests to the swarm.
+
 ## Running it
 
 Requirements: Node 20+, `git`, a Cloudflare account on Workers Paid with Artifacts enabled, and Wrangler logged in with the `artifacts:write` scope (`npx wrangler login`).

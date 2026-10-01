@@ -10,7 +10,8 @@
     "deploy:dev": "wrangler deploy --env dev",
     "types": "wrangler types",
     "typecheck": "tsc --noEmit",
-    "sim": "node sim/agents.mjs"
+    "sim": "node sim/agents.mjs",
+    "swarm": "node swarm/swarm.mjs"
   },
   "devDependencies": {
     "typescript": "^7.0.2",

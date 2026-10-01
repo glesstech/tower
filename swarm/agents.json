@@ -1,0 +1,28 @@
+{
+  "//": "Agents the swarm deals tasks out to, round-robin. cmd is argv (no shell). files are written into each agent's working directory before it starts. Placeholders: {prompt} {name} {mcp_url} {auth}.",
+  "agents": [
+    {
+      "name": "claude",
+      "cmd": [
+        "claude", "-p", "{prompt}",
+        "--mcp-config", "mcp.json", "--strict-mcp-config",
+        "--permission-mode", "acceptEdits",
+        "--allowedTools", "mcp__tower__*", "Bash", "Read", "Edit", "Write"
+      ],
+      "files": {
+        "mcp.json": { "mcpServers": { "tower": { "type": "http", "url": "{mcp_url}", "headers": { "Authorization": "{auth}" } } } }
+      }
+    },
+    {
+      "name": "opencode",
+      "cmd": ["opencode", "run", "-m", "opencode/gemini-3.5-flash", "{prompt}"],
+      "files": {
+        "opencode.json": {
+          "$schema": "https://opencode.ai/config.json",
+          "mcp": { "tower": { "type": "remote", "url": "{mcp_url}", "headers": { "Authorization": "{auth}" }, "enabled": true } },
+          "permission": "allow"
+        }
+      }
+    }
+  ]
+}
