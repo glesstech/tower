@@ -20,8 +20,12 @@ export function schema(sql: SqlStorage) {
 		);
 		CREATE INDEX IF NOT EXISTS events_plan ON events (plan_id, seq);
 	`);
-	// Added after plans existed; fails harmlessly once the column is there.
-	try {
-		sql.exec("ALTER TABLE plans ADD COLUMN amendment TEXT");
-	} catch {}
+	// Added after plans existed; each fails harmlessly once its column is there.
+	for (const column of ["amendment TEXT", "last_seen_at INTEGER", "ttl INTEGER"]) {
+		try {
+			sql.exec(`ALTER TABLE plans ADD COLUMN ${column}`);
+		} catch {}
+	}
+	// Plans in flight when leases arrived start theirs now, rather than expiring at once.
+	sql.exec("UPDATE plans SET last_seen_at = ? WHERE last_seen_at IS NULL AND status IN ('holding', 'cleared')", Date.now());
 }

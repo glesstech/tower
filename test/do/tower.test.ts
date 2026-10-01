@@ -1,4 +1,4 @@
-import { env, runInDurableObject } from "cloudflare:test";
+import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import type { Tower } from "../../src/tower";
 import { FakeArtifacts, type Snapshot } from "../fake-artifacts";
@@ -549,5 +549,105 @@ describe("event log", () => {
 		expect((await history(t)).events.length).toBeGreaterThan(0);
 		await t.call("DELETE", "/");
 		expect((await history(t)).events).toEqual([]);
+	});
+});
+
+describe("leases", () => {
+	// Time passing for a plan: move its last_seen_at back, as if its agent had been silent that long.
+	const silence = (t: Awaited<ReturnType<typeof tower>>, id: string, seconds: number) =>
+		runInDurableObject(t.stub, (instance: Tower) => {
+			const sql = (instance as any).sql as SqlStorage;
+			sql.exec("UPDATE plans SET last_seen_at = ? WHERE id = ?", Date.now() - seconds * 1000, id);
+		});
+	const alarmAt = (t: Awaited<ReturnType<typeof tower>>) => runInDurableObject(t.stub, (_: Tower, state) => state.storage.getAlarm());
+
+	it("expires a silent cleared plan: deletes its fork, frees its claims and clears the next plan", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/"]);
+		const b = await t.file("b", ["src/a.ts"]);
+		expect(a.plan).toMatchObject({ status: "cleared", ttl: 900 });
+		expect(b.plan.status).toBe("holding");
+		const scheduled = await alarmAt(t);
+		expect(scheduled).toBeGreaterThan(Date.now() + 890_000);
+		expect(scheduled).toBeLessThanOrEqual(Date.now() + 900_000);
+
+		// Before the TTL the alarm does nothing.
+		await silence(t, a.plan.id, 600);
+		expect(await runDurableObjectAlarm(t.stub)).toBe(true);
+		expect((await t.call("GET", "/state")).body.plans.map((p: Body) => p.id)).toEqual([a.plan.id, b.plan.id]);
+
+		await silence(t, a.plan.id, 901);
+		expect(await runDurableObjectAlarm(t.stub)).toBe(true);
+
+		const state = (await t.call("GET", "/state")).body;
+		expect(state.stats.leases_expired).toBe(1);
+		expect(state.plans).toEqual([expect.objectContaining({ id: b.plan.id, status: "cleared" })]);
+		expect(t.artifacts.repos.has(a.plan.fork)).toBe(false);
+		const expired = (await t.call("GET", `/events?plan=${a.plan.id}`)).body.events.at(-1);
+		expect(expired).toMatchObject({ type: "expired", agent: "a", ttl: 900, plan: { status: "expired" } });
+		expect(expired.silentFor).toBeGreaterThanOrEqual(901_000);
+
+		// The plan that took off gets a full lease of its own and its fork; the expired one stays closed.
+		const b2 = await t.call("GET", `/plans/${b.plan.id}`);
+		expect(b2.body.fork.name).toBe(`${REPO}--${b.plan.id}`);
+		expect(await alarmAt(t)).toBeGreaterThan(Date.now() + 890_000);
+		expect((await t.call("GET", `/plans/${a.plan.id}`)).body.plan.status).toBe("expired");
+		expect((await t.call("POST", `/plans/${a.plan.id}/heartbeat`)).status).toBe(400);
+		expect((await t.call("POST", `/plans/${a.plan.id}/land`, { summary: "late" })).status).toBe(400);
+		expect((await t.call("POST", `/plans/${a.plan.id}/release`)).body.plan.status).toBe("expired");
+	});
+
+	it("heartbeats, polls and checks keep a long-running plan alive", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/a.ts"]);
+
+		for (const beat of [
+			() => t.call("POST", `/plans/${a.plan.id}/heartbeat`),
+			() => t.call("GET", `/plans/${a.plan.id}`),
+			() => t.call("POST", `/plans/${a.plan.id}/check`),
+		]) {
+			// Hours of work in all, but never 15 minutes without a word.
+			await silence(t, a.plan.id, 840);
+			const res = await beat();
+			expect(res.status).toBe(200);
+			expect(await runDurableObjectAlarm(t.stub)).toBe(true);
+			expect((await t.plan(a.plan.id)).status).toBe("cleared");
+		}
+		const beat = await t.call("POST", `/plans/${a.plan.id}/heartbeat`);
+		expect(beat.body.expiresAt).toBeGreaterThan(Date.now() + 890_000);
+
+		// The same silence without a heartbeat in between expires it.
+		await silence(t, a.plan.id, 901);
+		await runDurableObjectAlarm(t.stub);
+		expect((await t.call("GET", `/plans/${a.plan.id}`)).body.plan.status).toBe("expired");
+	});
+
+	it("takes a per-plan TTL on filing, capped", async () => {
+		const t = await tower();
+		expect((await t.file("a", ["src/a.ts"])).plan.ttl).toBe(900);
+		const short = await t.call("POST", "/plans", { agent: "b", task: "t", claims: ["src/b.ts"], ttl: 5 });
+		expect(short.body.plan.ttl).toBe(60);
+		const long = await t.call("POST", "/plans", { agent: "c", task: "t", claims: ["docs/"], ttl: 999_999 });
+		expect(long.body.plan.ttl).toBe(3600);
+		expect((await t.call("POST", "/plans", { agent: "d", task: "t", claims: ["x"], ttl: "soon" })).status).toBe(400);
+
+		await silence(t, short.body.plan.id, 61);
+		await runDurableObjectAlarm(t.stub);
+		const plans = (await t.call("GET", "/state")).body.plans.map((p: Body) => p.agent);
+		expect(plans).toEqual(["a", "c"]);
+	});
+
+	it("does not expire a holding plan, and starts its lease when it clears", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/"]);
+		const b = await t.file("b", ["src/a.ts"]);
+		await silence(t, b.plan.id, 5000);
+		await runDurableObjectAlarm(t.stub);
+		expect((await t.plan(b.plan.id)).status).toBe("holding");
+
+		await silence(t, b.plan.id, 5000);
+		await t.call("POST", `/plans/${a.plan.id}/release`);
+		await runDurableObjectAlarm(t.stub);
+		expect((await t.plan(b.plan.id)).status).toBe("cleared");
 	});
 });

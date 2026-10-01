@@ -4,7 +4,7 @@
 import type { Claim } from "../claims";
 import type { TrunkWorkspace } from "../land";
 
-export type Status = "holding" | "cleared" | "landed" | "released";
+export type Status = "holding" | "cleared" | "landed" | "released" | "expired";
 
 export type Amendment = { claims: Claim[]; blockedBy: string[]; requestedAt: number };
 
@@ -19,6 +19,8 @@ export type Plan = {
 	fork: string | null;
 	base: string | null;
 	createdAt: number;
+	lastSeenAt: number;
+	ttl: number;
 };
 
 export type PlanRow = {
@@ -32,6 +34,8 @@ export type PlanRow = {
 	fork: string | null;
 	base: string | null;
 	created_at: number;
+	last_seen_at: number | null;
+	ttl: number | null;
 };
 
 export type Tree = { head: string; paths: string[]; truncated: boolean };
@@ -49,6 +53,19 @@ export interface Core {
 }
 
 export const ACTIVE = "('holding', 'cleared')";
+
+// Seconds a cleared plan may go without an agent call before its lease expires (see leases.ts):
+// the default, and the range a plan may ask for when it is filed.
+export const LEASE_TTL = 15 * 60;
+export const LEASE_TTL_MIN = 60;
+export const LEASE_TTL_MAX = 60 * 60;
+
+export function leaseTtl(ttl: unknown): number {
+	if (ttl === undefined || ttl === null) return LEASE_TTL;
+	const n = Number(ttl);
+	if (!Number.isFinite(n)) throw new Error("ttl must be a number of seconds");
+	return Math.min(Math.max(Math.round(n), LEASE_TTL_MIN), LEASE_TTL_MAX);
+}
 
 // Trunk writes and releases run one at a time; Durable Object input gates
 // open across awaited I/O, so this is what keeps two lands from racing on trunk.
@@ -76,6 +93,9 @@ export function toPlan(r: PlanRow): Plan {
 		fork: r.fork,
 		base: r.base,
 		createdAt: r.created_at,
+		// Plans filed before leases existed count from creation, with the default TTL.
+		lastSeenAt: r.last_seen_at ?? r.created_at,
+		ttl: r.ttl ?? LEASE_TTL,
 	};
 }
 

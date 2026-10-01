@@ -17,6 +17,9 @@ push to the shared trunk; you work in a private fork and tower lands your change
 3. Edit only the paths you claimed. If you discover you need another path, call amend_claims
    first. If it is held, keep working on what you have and call amend_claims again later; you
    keep your fork either way. If it reports a deadlock, finish without that path.
+   Your lease expires if tower hears nothing from you for about 15 minutes: the plan is released
+   and your fork deleted. During long work (installs, builds, test runs), call check every few
+   minutes to keep it alive.
 4. Commit and push to the fork's trunk branch (wait_for_clearance gives the command), then call
    land with a short summary and your evidence (what you were asked, your plan, and the checks you ran).
 5. If land reports drift, undo the changes outside your claims (or amend), push, and land again.
@@ -51,6 +54,11 @@ export function createServer(env: Env, repo: string): McpServer {
 				agent: z.string().describe("A name for you, unique among the agents in this run"),
 				task: z.string().describe("One line describing the change"),
 				claims,
+				ttl: z
+					.number()
+					.int()
+					.optional()
+					.describe("Seconds of silence before your lease expires (default 900, 60 to 3600)"),
 			},
 		},
 		async (args) => result(await call("POST", "/plans", args)),
@@ -101,7 +109,8 @@ export function createServer(env: Env, repo: string): McpServer {
 	server.registerTool(
 		"check",
 		{
-			description: "List the paths your pushed fork has changed so far, and any drift (changes outside your claims).",
+			description:
+				"List the paths your pushed fork has changed so far, and any drift (changes outside your claims). Also keeps your lease alive; call it every few minutes during long work.",
 			inputSchema: { plan_id: planId },
 		},
 		async ({ plan_id }) => result(await call("POST", `/plans/${plan_id}/check`)),

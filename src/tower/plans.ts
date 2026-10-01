@@ -9,6 +9,7 @@ import {
 	type Core,
 	deleteRepo,
 	json,
+	leaseTtl,
 	type Plan,
 	type PlanRow,
 	plan as getPlan,
@@ -22,15 +23,17 @@ import { bump, emitPlan } from "./events";
 
 const TOKEN_TTL = 3600;
 
-export async function file(t: Core, body: { agent?: string; task?: string; claims?: string[] }) {
+export async function file(t: Core, body: { agent?: string; task?: string; claims?: string[]; ttl?: number }) {
 	if (!body.agent || !body.task || !body.claims?.length) throw new Error("agent, task and claims are required");
 	const claims = body.claims.map(parseClaim);
+	const ttl = leaseTtl(body.ttl);
 	const id = crypto.randomUUID().slice(0, 8);
-	const blockedBy = blockers(t, claims, Date.now());
+	const now = Date.now();
+	const blockedBy = blockers(t, claims, now);
 	const next: Status = blockedBy.length ? "holding" : "cleared";
 	t.sql.exec(
-		"INSERT INTO plans (id, agent, task, claims, status, blocked_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		id, body.agent, body.task, JSON.stringify(claims), next, JSON.stringify(blockedBy), Date.now(),
+		"INSERT INTO plans (id, agent, task, claims, status, blocked_by, created_at, last_seen_at, ttl) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		id, body.agent, body.task, JSON.stringify(claims), next, JSON.stringify(blockedBy), now, now, ttl,
 	);
 	if (blockedBy.length) bump(t, "conflicts_prevented");
 	emitPlan(t, "filed", id);
@@ -185,6 +188,7 @@ export async function release(t: Core, id: string) {
 	return serial(t, async () => {
 		const plan = getPlan(t, id);
 		if (plan.status === "landed") throw new Error("plan already landed");
+		if (plan.status === "expired") return { plan }; // already released by its lease running out
 		await close(t, plan, "released");
 		return { plan: getPlan(t, id) };
 	});
@@ -192,7 +196,7 @@ export async function release(t: Core, id: string) {
 
 // Free a plan's airspace, then grant held amendments (in-flight agents first, oldest request
 // first) and clear whichever holding plans no longer have blockers.
-export async function close(t: Core, plan: Plan, status: "landed" | "released", data: Record<string, unknown> = {}) {
+export async function close(t: Core, plan: Plan, status: "landed" | "released" | "expired", data: Record<string, unknown> = {}) {
 	t.sql.exec("UPDATE plans SET status = ?, amendment = NULL WHERE id = ?", status, plan.id);
 	// Logged before the await below, so nothing filed meanwhile is ordered ahead of it.
 	emitPlan(t, status, plan.id, data);
@@ -222,7 +226,11 @@ export async function close(t: Core, plan: Plan, status: "landed" | "released", 
 		const blockedBy = blockers(t, JSON.parse(row.claims), row.created_at, row.id);
 		const next: Status = blockedBy.length ? "holding" : "cleared";
 		t.sql.exec("UPDATE plans SET status = ?, blocked_by = ? WHERE id = ?", next, JSON.stringify(blockedBy), row.id);
-		if (next === "cleared") emitPlan(t, "cleared", row.id);
+		if (next === "cleared") {
+			// Its lease starts now: an agent that waited in line shouldn't expire the moment it clears.
+			t.sql.exec("UPDATE plans SET last_seen_at = ? WHERE id = ?", Date.now(), row.id);
+			emitPlan(t, "cleared", row.id);
+		}
 		else if (JSON.stringify(blockedBy) !== row.blocked_by) emitPlan(t, "holding", row.id, { blockedBy });
 	}
 }
