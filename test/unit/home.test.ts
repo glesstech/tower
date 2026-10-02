@@ -51,10 +51,14 @@ describe("demoAccess", () => {
 
 describe("home", () => {
 	const state = { plans: [{ status: "cleared" }, { status: "holding" }], stats: { landed: 4, conflicts_prevented: 2 } };
-	const env = (demo?: string) =>
+	const env = (demo?: string, gone: string[] = []) =>
 		({
 			TOWER_DEMO_REPO: demo,
 			ARTIFACTS: {
+				get: async (name: string) => {
+					if (gone.includes(name)) throw Object.assign(new Error(`Repository not found: ${name}.`), { code: "NOT_FOUND" });
+					return { info: async () => ({ name }), [Symbol.dispose]() {} };
+				},
 				list: async ({ cursor }: { cursor?: string } = {}) =>
 					cursor
 						? { repos: [{ name: "b" }, { name: "b--2" }], total: 4 }
@@ -73,5 +77,10 @@ describe("home", () => {
 	it("shows only the demo trunk without the operator key", async () => {
 		expect(await home(env("b"), false)).toEqual({ demo: "b", trunks: [{ repo: "b", counts: c }] });
 		expect(await home(env(), false)).toEqual({ demo: null, trunks: [] });
+	});
+
+	it("never shows a demo trunk that was torn down", async () => {
+		expect(await home(env("gone", ["gone"]), false)).toEqual({ demo: null, trunks: [] });
+		expect(await home(env("gone", ["gone"]), true)).toEqual({ demo: null, trunks: [{ repo: "a", counts: c }, { repo: "b", counts: c }] });
 	});
 });

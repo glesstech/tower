@@ -16,11 +16,14 @@ const VIDEO = "";
 nav();
 snippet(null);
 if (VIDEO) link($("links"), "Watch the video", VIDEO);
-load().catch((err) => console.error(err));
+load().catch((err) => {
+	console.error(err);
+	$("links").appendChild(el("span", "note", "can't list trunks: " + err.message));
+});
 
 async function load() {
 	const res = await fetch("/repos", { headers: KEY ? { Authorization: "Bearer " + KEY } : {} });
-	if (!res.ok) throw new Error("/repos: " + res.status);
+	if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || "/repos: " + res.status);
 	/** @type {{ demo: string | null, trunks: Trunk[] }} */
 	const { demo, trunks } = await res.json();
 	if (demo) {
