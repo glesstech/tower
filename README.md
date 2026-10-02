@@ -1,6 +1,6 @@
 # tower
 
-Air traffic control for agents working on Git, built on [Cloudflare Artifacts](https://developers.cloudflare.com/artifacts/).
+Git traffic control for agents working on Git, built on [Cloudflare Artifacts](https://developers.cloudflare.com/artifacts/).
 
 Plain Git finds out about conflicts at merge time, after the work is done. With hundreds of agents that's backwards. In `tower`, an agent files a **flight plan** (its task and the paths it will touch) before it starts. The tower sequences overlapping plans, gives each cleared agent its own fork and a fork-scoped token, and lands each change onto trunk itself. Trunk never sees a textual merge conflict, and every landed commit remembers why it was made.
 
