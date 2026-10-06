@@ -21,8 +21,13 @@ export function heartbeat(t: Core, id: string) {
 	return { plan, expiresAt: plan.status === "cleared" ? deadline(plan) : null };
 }
 
+// A plan waiting in the review inbox has no agent to hear from; its lease is paused until a
+// human decides (review.ts restarts it on send-back).
 function cleared(t: Core): Plan[] {
-	return t.sql.exec<PlanRow>("SELECT * FROM plans WHERE status = 'cleared' ORDER BY created_at").toArray().map(toPlan);
+	return t.sql
+		.exec<PlanRow>("SELECT * FROM plans WHERE status = 'cleared' AND review IS NULL ORDER BY created_at")
+		.toArray()
+		.map(toPlan);
 }
 
 // Make sure the alarm fires by the earliest cleared plan's deadline. Heartbeats only push
@@ -43,7 +48,7 @@ export async function expire(t: Core) {
 			// Re-read: a heartbeat may have arrived, or an earlier expiry just cleared it fresh.
 			const plan = getPlan(t, id);
 			const now = Date.now();
-			if (plan.status !== "cleared" || deadline(plan) > now) continue;
+			if (plan.status !== "cleared" || plan.review || deadline(plan) > now) continue;
 			bump(t, "leases_expired");
 			await close(t, plan, "expired", { silentFor: now - plan.lastSeenAt, ttl: plan.ttl });
 		}

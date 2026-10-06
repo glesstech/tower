@@ -672,3 +672,189 @@ describe("leases", () => {
 		expect((await t.plan(b.plan.id)).status).toBe("cleared");
 	});
 });
+
+describe("review by exception", () => {
+	// A tower whose workspace really lands onto the fake trunk (each land a new commit), so trunk
+	// moves the way it does in production and the scorer sees the composed tree.
+	async function composing() {
+		const t = await tower();
+		const trunk = t.artifacts.repos.get(REPO)!;
+		await runInDurableObject(t.stub, (instance: Tower) => {
+			(instance as any).workspace = {
+				branch: "main",
+				land: async (o: { fork: ArtifactsRepo; changes: { op: string; path: string; hash?: string }[]; message: string }) => {
+					const files = await snapshot(trunk);
+					for (const c of o.changes) {
+						if (c.op === "delete") delete files[c.path];
+						else files[c.path] = await (await o.fork.readBlob(c.hash!))!.text();
+					}
+					const sha = await trunk.commit(files, o.message);
+					t.landed.push({ message: o.message, paths: o.changes.map((c) => c.path) });
+					return sha;
+				},
+			};
+		});
+		const land = (id: string, body: Body = { summary: "s", evidence: { checks: "npm test: ok" } }) => t.call("POST", `/plans/${id}/land`, body);
+		const decide = (body: Body) => t.call("POST", "/inbox/decide", body);
+		const inbox = async () => (await t.call("GET", "/inbox")).body;
+		return { ...t, trunk, land, decide, inbox };
+	}
+
+	async function snapshot(repo: ArtifactsRepo): Promise<Snapshot> {
+		const [head] = await repo.log({ limit: 1 });
+		const files: Snapshot = {};
+		const walk = async (hash: string, prefix: string) => {
+			for (const e of (await repo.readTree(hash))!) {
+				if (e.type === "tree") await walk(e.hash, `${prefix}${e.name}/`);
+				else files[prefix + e.name] = await (await repo.readBlob(e.hash))!.text();
+			}
+		};
+		await walk((await repo.readCommit(head.hash))!.treeHash, "");
+		return files;
+	}
+
+	it("auto-lands a low-risk change and reports its score", async () => {
+		const t = await composing();
+		const a = await t.file("a", ["src/a.ts"]);
+		await t.push(a.plan.id, { ...SEED, "src/a.ts": "a2\n" });
+		const res = await t.land(a.plan.id);
+		expect(res).toMatchObject({ status: 200, body: { paths: ["src/a.ts"], risk: { level: "low", reasons: [] } } });
+		expect((await t.inbox())).toMatchObject({ decisions: [], headline: { autoLanded: 1, decisions: 0 } });
+	});
+
+	it("queues a sensitive change for a human, holds its claims, and lands it on approval", async () => {
+		const t = await composing();
+		const a = await t.file("a", ["src/auth/"]);
+		const b = await t.file("b", ["src/auth/session.ts"]);
+		await t.push(a.plan.id, { ...SEED, "src/auth/session.ts": "export const ttl = 1;\n" });
+		const res = await t.land(a.plan.id);
+		expect(res.status).toBe(202);
+		expect(res.body.review).toMatchObject({ level: "review", reasons: ["sensitive: auth (src/auth/session.ts)"], group: { key: "sensitive:auth" } });
+		expect(t.landed).toHaveLength(0);
+
+		// Still cleared and holding its airspace; can't be landed again or released by a sweep.
+		expect(await t.plan(a.plan.id)).toMatchObject({ status: "cleared", review: { paths: ["src/auth/session.ts"] } });
+		expect((await t.plan(b.plan.id)).status).toBe("holding");
+		expect((await t.land(a.plan.id)).status).toBe(409);
+		expect((await t.call("POST", `/plans/${a.plan.id}/release`)).status).toBe(409);
+
+		const box = await t.inbox();
+		expect(box.decisions).toMatchObject([{ key: "sensitive:auth", label: "1 auth changes", count: 1, plans: [{ id: a.plan.id, agent: "a", summary: "s" }] }]);
+		expect(box.headline).toMatchObject({ agents: 2, conflictsReachedHuman: 0, decisions: 1, text: "2 agents, 0 conflicts reached a human, 1 decision required" });
+
+		const decided = await t.decide({ decision: "approve", group: "sensitive:auth" });
+		expect(decided.body.results).toMatchObject([{ id: a.plan.id, outcome: "landed", paths: ["src/auth/session.ts"] }]);
+		expect(t.landed).toHaveLength(1);
+		expect(await t.plan(a.plan.id)).toMatchObject({ status: "landed", review: null });
+		expect((await t.plan(b.plan.id)).status).toBe("cleared");
+		expect((await t.inbox()).headline.text).toBe("2 agents, 0 conflicts reached a human, 1 decision required");
+		expect((await t.call("GET", "/state")).body.stats).toMatchObject({ reviews_queued: 1, reviews_approved: 1, decisions: 1, landed: 1 });
+	});
+
+	it("groups similar changes into one decision", async () => {
+		const t = await composing();
+		const ids = [];
+		for (const n of ["a", "b", "c"]) {
+			const p = await t.file(n, [`.github/workflows/${n}.yml`]);
+			await t.push(p.plan.id, { ...SEED, [`.github/workflows/${n}.yml`]: "on: push\n" });
+			expect((await t.land(p.plan.id)).status).toBe(202);
+			ids.push(p.plan.id);
+		}
+		const box = await t.inbox();
+		expect(box.decisions).toHaveLength(1);
+		expect(box.decisions[0]).toMatchObject({ key: "sensitive:CI config", label: "3 CI config changes", count: 3 });
+
+		const res = await t.decide({ decision: "approve", group: "sensitive:CI config" });
+		expect(res.body.results.map((r: Body) => r.outcome)).toEqual(["landed", "landed", "landed"]);
+		expect(t.landed).toHaveLength(3);
+		expect(Object.keys(await snapshot(t.trunk)).filter((p) => p.startsWith(".github/")).sort()).toEqual(
+			[".github/workflows/a.yml", ".github/workflows/b.yml", ".github/workflows/c.yml"],
+		);
+		expect((await t.inbox()).headline).toMatchObject({ agents: 3, decisions: 1 });
+	});
+
+	it("rejects (releasing the plan) and sends back (the agent may push and land again)", async () => {
+		const t = await composing();
+		const a = await t.file("a", ["src/billing/"]);
+		const b = await t.file("b", ["src/billing/plan.ts"]);
+		await t.push(a.plan.id, { ...SEED, "src/billing/plan.ts": "x\n" });
+		await t.land(a.plan.id);
+		const back = await t.decide({ decision: "send_back", plans: [a.plan.id], note: "add a test" });
+		expect(back.body.results).toEqual([{ id: a.plan.id, outcome: "sent_back" }]);
+		expect(await t.plan(a.plan.id)).toMatchObject({ status: "cleared", review: null });
+		const { events } = (await t.call("GET", `/events?plan=${a.plan.id}`)).body;
+		expect(events.find((e: Body) => e.type === "sent_back")).toMatchObject({ note: "add a test" });
+
+		await t.push(a.plan.id, { ...SEED, "src/billing/plan.ts": "y\n", "src/billing/plan.test.ts": "t\n" });
+		expect((await t.land(a.plan.id)).status).toBe(202);
+		expect((await t.decide({ decision: "reject", plans: [a.plan.id] })).body.results).toEqual([{ id: a.plan.id, outcome: "rejected" }]);
+		expect((await t.plan(a.plan.id)).status).toBe("released");
+		expect((await t.plan(b.plan.id)).status).toBe("cleared");
+		expect(t.landed).toHaveLength(0);
+		expect((await t.decide({ decision: "approve", plans: [a.plan.id] })).body.results).toMatchObject([{ outcome: "error" }]);
+		expect((await t.decide({ decision: "maybe", plans: [a.plan.id] })).status).toBe(400);
+		expect((await t.decide({ decision: "approve", group: "nope" })).status).toBe(400);
+	});
+
+	it("sends an approval back if the fork moved after it was scored", async () => {
+		const t = await composing();
+		const a = await t.file("a", ["src/auth/"]);
+		await t.push(a.plan.id, { ...SEED, "src/auth/x.ts": "1\n" });
+		await t.land(a.plan.id);
+		await t.push(a.plan.id, { ...SEED, "src/auth/x.ts": "2\n" });
+		const res = await t.decide({ decision: "approve", plans: [a.plan.id] });
+		expect(res.body.results).toEqual([{ id: a.plan.id, outcome: "sent_back", reason: "fork changed since it was reviewed" }]);
+		expect(t.landed).toHaveLength(0);
+		expect(await t.plan(a.plan.id)).toMatchObject({ status: "cleared", review: null });
+	});
+
+	it("catches a semantic conflict: a call added since the fork to a module this change edits", async () => {
+		const t = await composing();
+		await t.trunk.commit({ ...SEED, "src/a.ts": "export function f(x: number) {}\n" });
+		const a = await t.file("a", ["src/a.ts"]);
+		const b = await t.file("b", ["src/b.ts"]);
+		const base = await snapshot(t.trunk);
+
+		// B adds a call to f in b.ts; it touches nothing A holds, so it lands on its own.
+		await t.push(b.plan.id, { ...base, "src/b.ts": 'import { f } from "./a";\nf(1);\n' });
+		const landedB = await t.land(b.plan.id);
+		expect(landedB).toMatchObject({ status: 200, body: { risk: { level: "low" } } });
+
+		// A changes f's signature, from a fork made before B landed: a human has to look.
+		await t.push(a.plan.id, { ...base, "src/a.ts": "export function f(x: string, y: string) {}\n" });
+		const res = await t.land(a.plan.id);
+		expect(res.status).toBe(202);
+		expect(res.body.review.reasons).toEqual([
+			`semantic overlap: landed since this fork, src/b.ts (b, ${landedB.body.sha.slice(0, 8)}) imports src/a.ts`,
+		]);
+		expect(res.body.review.group.key).toBe("semantic:src/");
+	});
+
+	it("flags deleting a module trunk still imports", async () => {
+		const t = await composing();
+		await t.trunk.commit({ ...SEED, "src/b.ts": 'import { a } from "./a";\n' });
+		const a = await t.file("a", ["src/a.ts"]);
+		const files = await snapshot(t.trunk);
+		delete files["src/a.ts"];
+		await t.push(a.plan.id, files);
+		const res = await t.land(a.plan.id);
+		expect(res.status).toBe(202);
+		expect(res.body.review.reasons).toContain("deletes src/a.ts, still imported by src/b.ts");
+	});
+
+	it("pauses the lease while a change waits for a human, and restarts it on send-back", async () => {
+		const t = await composing();
+		const a = await t.file("a", ["src/auth/"]);
+		await t.push(a.plan.id, { ...SEED, "src/auth/x.ts": "1\n" });
+		await t.land(a.plan.id);
+		await runInDurableObject(t.stub, (instance: Tower) => {
+			(instance as any).sql.exec("UPDATE plans SET last_seen_at = ? WHERE id = ?", Date.now() - 10_000_000, a.plan.id);
+		});
+		await runDurableObjectAlarm(t.stub);
+		expect((await t.plan(a.plan.id)).status).toBe("cleared");
+
+		await t.decide({ decision: "send_back", plans: [a.plan.id] });
+		const { body } = await t.call("POST", `/plans/${a.plan.id}/heartbeat`);
+		expect(body.expiresAt).toBeGreaterThan(Date.now() + 800_000);
+	});
+});

@@ -8,21 +8,25 @@
 //                        └─held─▶ amendment waits (keeping fork + lease) until its blockers close;
 //                                 one that would close a wait-for cycle is refused (409 deadlock)
 //   cleared ──land──▶ diff fork vs base ──outside lease?──▶ 409 drift (stays cleared)
-//                                        └─inside lease──▶ overlay onto trunk, push, landed
+//                                        └─inside lease──▶ risk score ──low──▶ overlay onto trunk, push, landed
+//                                                                └─else─▶ inbox (202); a human approves (lands),
+//                                                                         rejects (released) or sends it back
 //   cleared ──silent past its TTL (no poll, check, amend, land or heartbeat)──▶ alarm: expired
 //
 // This class is the router; the logic lives in src/tower/: plans.ts (file, clear, amend,
-// release), leases.ts (heartbeats and expiring silent plans), landing.ts (check, land, why), trunk.ts (init, teardown, tree, blob), events.ts
+// release), leases.ts (heartbeats and expiring silent plans), landing.ts (check, land, why), review.ts (risk inputs, the
+// human inbox and its decisions), trunk.ts (init, teardown, tree, blob), events.ts
 // (the persisted event log and live feed, stats, dashboard state), schema.ts, and core.ts
 // (shared types and helpers).
 
 import { DurableObject } from "cloudflare:workers";
 import type { TrunkWorkspace } from "./land";
-import { type Core, getMeta, json, setMeta, type Tree } from "./tower/core";
+import { type Core, getMeta, plan as getPlan, json, setMeta, type Tree } from "./tower/core";
 import { events, live, state } from "./tower/events";
 import { check, land, why } from "./tower/landing";
 import { expire, heartbeat, schedule, touch } from "./tower/leases";
 import { amend, file, release, status } from "./tower/plans";
+import { decide, inbox } from "./tower/review";
 import { schema } from "./tower/schema";
 import { blob, destroy, init, readToken, tree } from "./tower/trunk";
 
@@ -34,6 +38,7 @@ export class Tower extends DurableObject<Env> implements Core {
 	workspace: TrunkWorkspace | null = null;
 	provisioning = new Map<string, Promise<void>>();
 	treeCache: { head: string; tree: Promise<Tree> } | null = null;
+	importSpecs = new Map<string, string[]>();
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
@@ -66,6 +71,8 @@ export class Tower extends DurableObject<Env> implements Core {
 			if (request.method === "GET" && parts[0] === "why") {
 				return json(why(this, url.searchParams.get("path") ?? "", url.searchParams.get("limit")));
 			}
+			if (request.method === "GET" && parts[0] === "inbox") return json(inbox(this));
+			if (request.method === "POST" && parts[0] === "inbox" && parts[1] === "decide") return json(await decide(this, body));
 			if (parts[0] === "plans") {
 				const res = await this.plans(request.method, parts, body);
 				// Anything that clears a plan starts a lease; make sure the alarm will look at it.
@@ -105,7 +112,11 @@ export class Tower extends DurableObject<Env> implements Core {
 		if (method === "POST" && parts[2] === "check") return json(await check(this, id));
 		if (method === "POST" && parts[2] === "amend") return amend(this, id, body.claims);
 		if (method === "POST" && parts[2] === "land") return await land(this, id, body);
-		if (method === "POST" && parts[2] === "release") return json(await release(this, id));
+		if (method === "POST" && parts[2] === "release") {
+			// A change in the inbox is the human's to decide; the swarm releases leftover plans.
+			if (getPlan(this, id).review) return json({ error: "awaiting human review; decide it in the inbox" }, 409);
+			return json(await release(this, id));
+		}
 		return json({ error: "not found" }, 404);
 	}
 
