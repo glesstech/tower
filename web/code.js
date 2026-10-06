@@ -260,7 +260,7 @@ function landEntry(/** @type {Land} */ l) {
 	const agent = el("b", "", l.agent);
 	agent.style.color = color(l.agent);
 	const plan = el("a", "", "plan " + l.plan_id);
-	plan.href = withKey("/repos/" + encodeURIComponent(REPO) + "/plans?id=" + encodeURIComponent(l.plan_id));
+	plan.href = withKey("/repos/" + encodeURIComponent(REPO) + "/plans/" + encodeURIComponent(l.plan_id));
 	const when = el("span", "", " · " + ago(l.landed_at) + " · ");
 	when.title = new Date(l.landed_at).toLocaleString();
 	by.append(agent, when, el("code", "", l.sha.slice(0, 7)), plan);

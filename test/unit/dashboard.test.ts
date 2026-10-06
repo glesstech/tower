@@ -19,6 +19,7 @@ describe("access", () => {
 		expect(access(keys, "view", get("/tree"))).toBe("dashboard");
 		expect(access(keys, "view", get("/blob"))).toBe("dashboard");
 		expect(access(keys, "view", get("/why"))).toBe("dashboard");
+		expect(access(keys, "view", get("/plans/abc/diff"))).toBe("dashboard");
 	});
 
 	it("keeps the dashboard key away from everything else", () => {
@@ -29,7 +30,10 @@ describe("access", () => {
 		expect(access(keys, "view", get("/mcp"))).toBeNull();
 		expect(access(keys, "view", { method: "POST", rest: "/blob", websocket: false })).toBeNull();
 		expect(access(keys, "view", get("/blob", true))).toBeNull();
+		// Polling a plan mints a fork token; only its diff is read-only.
 		expect(access(keys, "view", get("/plans/abc"))).toBeNull();
+		expect(access(keys, "view", { method: "POST", rest: "/plans/abc/diff", websocket: false })).toBeNull();
+		expect(access(keys, "view", get("/plans/abc/diff/x"))).toBeNull();
 		// The Tower answers any upgrade with the live feed, so only /live may upgrade.
 		expect(access(keys, "view", get("/state", true))).toBeNull();
 		expect(access(keys, "view", { method: "POST", rest: "/live", websocket: true })).toBeNull();
@@ -59,6 +63,15 @@ describe("pageAsset", () => {
 		expect(pageAsset({ method: "DELETE", rest: "/", websocket: false })).toBeNull();
 		expect(pageAsset(get("/plans/abc"))).toBeNull();
 		expect(pageAsset(get("/"))).toBeNull();
+	});
+
+	it("serves a plan's page at /plans/:id only to a browser asking for HTML", () => {
+		expect(pageAsset({ ...get("/plans/abc123"), html: true })).toBe("/plan");
+		expect(pageAsset({ ...get("/plans"), html: true })).toBe("/plans");
+		// Agents poll the same URL for clearance and must keep getting the Tower's JSON.
+		expect(pageAsset(get("/plans/abc123"))).toBeNull();
+		expect(pageAsset({ ...get("/plans/abc/diff"), html: true })).toBeNull();
+		expect(pageAsset({ method: "POST", rest: "/plans/abc", websocket: false, html: true })).toBeNull();
 	});
 
 	it("only maps plain page names", () => {

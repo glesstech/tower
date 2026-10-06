@@ -37,7 +37,7 @@ Plain Git finds out about conflicts at merge time, after the work is done. With 
 
 ## API
 
-All routes are under `/repos/:repo` and require `Authorization: Bearer $TOWER_API_KEY`. The WebSocket route also accepts `?key=`. The optional read-only `TOWER_DASHBOARD_KEY` opens only `GET /live`, `/state`, `/events` and `/tree`, so it is safe to show in a dashboard URL.
+All routes are under `/repos/:repo` and require `Authorization: Bearer $TOWER_API_KEY`. The WebSocket route also accepts `?key=`. The optional read-only `TOWER_DASHBOARD_KEY` opens only `GET /live`, `/state`, `/events`, `/tree`, `/blob`, `/why` and `/plans/:id/diff`, so it is safe to show in a dashboard URL.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -47,6 +47,7 @@ All routes are under `/repos/:repo` and require `Authorization: Bearer $TOWER_AP
 | POST | `/plans` `{agent, task, claims[], force?}` | File a flight plan. Returns `holding` (with `waiting`: why, per claim) or `cleared`, plus fork credentials if cleared, the claims' `coverage` of trunk and any `warnings`. A too-broad claim is refused with `claim_too_broad` and suggested files. |
 | GET | `/plans/:id` | Poll a plan. Once cleared, returns the fork remote and a fresh fork token. |
 | POST | `/plans/:id/check` | Report touched paths and drift so far. |
+| GET | `/plans/:id/diff` | Read-only: the plan (from its events) and every file it changed, with old and new contents. A landed plan is diffed on trunk (its commit against the parent); a plan in flight in its fork (base against head, each file flagged `outside` its claims or not). Answered by the Worker, so viewing a plan is never its agent's heartbeat. |
 | POST | `/plans/:id/amend` `{claims[]}` | Extend an active plan's claims. A too-broad new path is refused with 422 `claim_too_broad`. Free paths are granted at once; held paths wait (the plan keeps its fork and lease) until their holders land or release. An amendment that would close a wait cycle is refused with 409 `deadlock`. |
 | POST | `/plans/:id/land` `{summary?, evidence?}` | Merge gate: land onto trunk, or 409 with the drifted paths. |
 | POST | `/plans/:id/release` | Abandon a plan and free its airspace. |
@@ -56,6 +57,7 @@ All routes are under `/repos/:repo` and require `Authorization: Bearer $TOWER_AP
 | GET | `/why?path=` | Landed changes (with evidence) that touched a path. |
 | GET | `/live?since=` (WebSocket) | A `state` snapshot (with the latest `seq`) on connect, then each event as it is logged. With `?since=<seq>`, the events after that seq instead of the snapshot, so a reconnecting client catches up without gaps (a fresh snapshot if they were pruned or the trunk was reset). |
 | GET | `/<page>?key=` | A UI page from `web/`, such as `/dashboard` (no key needed to load it; it calls the API with its `?key=`). |
+| GET | `/plans/:id?key=` (browser) | A plan's page (`web/plan.html`), served only when the request asks for HTML; API clients polling the same URL get the plan as before. |
 
 ## Dashboard
 
@@ -63,6 +65,8 @@ Open `https://tower-dev.<subdomain>.workers.dev/repos/<repo>/dashboard?key=$TOWE
 
 - **Operator** (the default) lists in-flight plans with their agent, task, claims, fork and running time. Holding plans show what they wait on ("waiting on `claude-issue-11` for `src/tower.ts`"). In-flight plans also show held amendments and deadlock refusals. Lands are listed with their summary, files and sha, with the agent's evidence collapsed until you open it. The event feed lists every filing, hold, drift rejection (with its paths) and land, backfilled from the event log on load. Click any path to see why it looks the way it does. With the operator key this calls `/why`. The dashboard key can't read `/why`, so the page falls back to the lands it has seen.
 - **Map** (`?view=map`, for demos) draws trunk as a treemap with labeled top-level regions. Each in-flight agent is a colored dot over a tinted region that carries the agent's name. Holding plans are dashed. The last few lands stay outlined in green, and drift flashes red. A legend and the trunk timeline stay on screen.
+
+**Plans** (`/repos/<repo>/plans`) lists every plan in the event log, newest first, filterable by status. Each has a shareable page at `/repos/<repo>/plans/<id>`, the pull request without anyone opening one: the agent, the task (rendered markdown), its status and how long it spent in each state; its airspace (claims, and each amendment granted or held, and on whom); the lifecycle from the event log (filed, holding behind whom, cleared, amendments, drift with its paths, review, landed, released or expired); while in flight, the fork and the paths touched so far with any drift; once landed, the trunk SHA, every changed file with a diff, the risk score and the evidence. Every path links to the code explorer's history for it. `web/plan-model.js` is its DOM-free model (story, line diff, markdown), unit-tested in Node.
 
 Agents get colors from a fixed palette in the order they are first seen, so `claude-issue-21` and `claude-issue-22` look different. Once the palette runs out, colors are hashed. **Replay** loads the trunk's event log and plays it back at 1–64× in either view. **Save log** downloads the log, and **Load log** replays a saved file, so a run can still be shown after its trunk is torn down.
 
