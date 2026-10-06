@@ -4,16 +4,24 @@
 
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
+import { suggest } from "./claims";
 
 const WAIT_MS = 25_000;
 
 const INSTRUCTIONS = `Tower coordinates many agents changing one Git repository at the same time. You never
 push to the shared trunk; you work in a private fork and tower lands your change for you.
 
-1. Plan before editing. Call file_plan with every file you expect to change (use "dir/" for a
-   whole directory). Call why on files you will change to learn why they look the way they do.
+1. Plan before editing, and claim narrowly: every path you claim is airspace other agents wait
+   for. Start from real paths: call suggest_claims with your task (trunk files ranked for it),
+   and why on the files you expect to change. Then call file_plan with the specific files you
+   will change, plus any new files you will create by their exact path. Don't claim a directory
+   to be safe: tower refuses broad claims (claim_too_broad, with narrower files to claim
+   instead), and warns about paths that don't exist on trunk, which usually means a guess.
+   Claim what you know now and grow the lease with amend_claims as you go.
 2. Call wait_for_clearance until it returns a fork, then clone the fork with the git command it
-   gives you. If another agent holds an overlapping path, you wait in line.
+   gives you. If another agent holds an overlapping path, you wait in line; the answer says
+   which of your claims is held and by whom. If a claim of yours is wider than you need, release
+   and refile without it to start now.
 3. Edit only the paths you claimed. If you discover you need another path, call amend_claims
    first. If it is held, keep working on what you have and call amend_claims again later; you
    keep your fork either way. If it reports a deadlock, finish without that path.
@@ -44,12 +52,17 @@ export function createServer(env: Env, repo: string): McpServer {
 	const claims = z
 		.array(z.string())
 		.min(1)
-		.describe('Repo-relative paths: files ("src/a.ts") or directories ("src/auth/")');
+		.describe('Repo-relative file paths ("src/a.ts"), including new files you will create. A directory ("src/auth/") only when you will change most of a small one');
+	const force = z
+		.boolean()
+		.optional()
+		.describe("Claim paths tower refuses as too broad anyway. Counted, and shown on the dashboard; narrow the claim instead if you can");
 
 	server.registerTool(
 		"file_plan",
 		{
-			description: "File a flight plan: what you will do and every path you expect to change. Do this before editing.",
+			description:
+				"File a flight plan: what you will do and the specific files you expect to change. Do this before editing. A claim covering too much of trunk is refused with narrower files to claim instead; paths that don't exist on trunk come back as warnings.",
 			inputSchema: {
 				agent: z.string().describe("A name for you, unique among the agents in this run"),
 				task: z.string().describe("One line describing the change"),
@@ -59,6 +72,7 @@ export function createServer(env: Env, repo: string): McpServer {
 					.int()
 					.optional()
 					.describe("Seconds of silence before your lease expires (default 900, 60 to 3600)"),
+				force,
 			},
 		},
 		async (args) => result(await call("POST", "/plans", args)),
@@ -100,10 +114,26 @@ export function createServer(env: Env, repo: string): McpServer {
 		"amend_claims",
 		{
 			description:
-				"Add paths to your plan's claims before editing them. Free paths are granted at once. Paths another agent holds are held for you (granted: false, held: true) and granted when that agent lands or releases; call again to see. Refused with a deadlock if the wait would be circular.",
-			inputSchema: { plan_id: planId, claims },
+				"Add paths to your plan's claims before editing them. Free paths are granted at once. Paths another agent holds are held for you (granted: false, held: true) and granted when that agent lands or releases; call again to see. Refused with a deadlock if the wait would be circular, or claim_too_broad if a new path covers too much of trunk.",
+			inputSchema: { plan_id: planId, claims, force },
 		},
-		async ({ plan_id, claims }) => result(await call("POST", `/plans/${plan_id}/amend`, { claims })),
+		async ({ plan_id, claims, force }) => result(await call("POST", `/plans/${plan_id}/amend`, { claims, force })),
+	);
+
+	server.registerTool(
+		"suggest_claims",
+		{
+			description:
+				"Trunk files ranked for a task: by how well their names and directories match it, and by which files past lands of similar tasks changed. Call before file_plan to claim real, specific paths.",
+			inputSchema: { task: z.string().describe("Your task, in your own words or as given"), limit: z.number().int().min(1).max(50).optional() },
+		},
+		async ({ task, limit }) => {
+			const [tree, state] = await Promise.all([call("GET", "/tree"), call("GET", "/state")]);
+			if (tree.status !== 200) return result(tree);
+			const history = (state.body?.lands ?? []).map((l: { task: string; paths: string[] }) => ({ task: l.task, paths: l.paths }));
+			const files = suggest(task, tree.body.paths ?? [], history, { limit: limit ?? 15 });
+			return result({ status: 200, body: { files, trunk: tree.body.paths?.length ?? 0 } });
+		},
 	);
 
 	server.registerTool(

@@ -25,7 +25,7 @@ Plain Git finds out about conflicts at merge time, after the work is done. With 
                      Artifacts namespace "tower": demo (trunk), demo--<planId> (forks)
 ```
 
-**Leases.** A claim is a file (`src/auth/session.ts`) or a directory (`src/auth/` or `src/auth/**`). Two claims overlap when one equals or contains the other. A new plan waits behind every cleared plan it overlaps, and behind every earlier holding plan it overlaps, so the queue is FIFO and nothing jumps ahead. Symbol-level claims, from a tree-sitter planning pass, are planned as a finer-grained layer on the same model.
+**Leases.** A claim is a file (`src/auth/session.ts`) or a directory (`src/auth/` or `src/auth/**`). Two claims overlap when one equals or contains the other. A new plan waits behind every cleared plan it overlaps, and behind every earlier holding plan it overlaps, so the queue is FIFO and nothing jumps ahead. Leases are only as good as the claims behind them, so each claim is measured against trunk's file list. One covering more than 40 files, or (from 8 files up) more than 15% of trunk or a whole top-level directory, is refused as `claim_too_broad` with the files under it that fit the task (by name and by what lands of similar tasks changed); `force: true` overrides, and is counted. Limits are per trunk (`claim_max_files`, `claim_max_share`, `claim_min_files` in its meta). Paths that look guessed (a missing directory, a near-miss like `wrangler.toml` for `wrangler.jsonc`) come back as `warnings`, since creating files is legitimate. A holding plan's poll says which of its claims is held, by whom, and whether narrowing its own claim would let it start. Symbol-level claims, from a tree-sitter planning pass, are planned as a finer-grained layer on the same model.
 
 **Isolation.** Every cleared plan gets its own Artifacts fork and short-lived write tokens scoped to that fork. Agents never hold trunk credentials. When the plan lands or is released, the fork is deleted. A landed fork's changes live on trunk, and its name stays in the commit's `Tower-Fork` trailer.
 
@@ -44,10 +44,10 @@ All routes are under `/repos/:repo` and require `Authorization: Bearer $TOWER_AP
 | POST | `/init` `{importUrl?}` | Create or import trunk. Returns a seeding token. |
 | POST | `/token` | A read-only trunk token (10 minutes) for fetching landed work. |
 | DELETE | `/` | Tear down a trunk: delete it and any remaining forks, and reset the Tower's state. |
-| POST | `/plans` `{agent, task, claims[]}` | File a flight plan. Returns `holding` or `cleared`, plus fork credentials if cleared. |
+| POST | `/plans` `{agent, task, claims[], force?}` | File a flight plan. Returns `holding` (with `waiting`: why, per claim) or `cleared`, plus fork credentials if cleared, the claims' `coverage` of trunk and any `warnings`. A too-broad claim is refused with `claim_too_broad` and suggested files. |
 | GET | `/plans/:id` | Poll a plan. Once cleared, returns the fork remote and a fresh fork token. |
 | POST | `/plans/:id/check` | Report touched paths and drift so far. |
-| POST | `/plans/:id/amend` `{claims[]}` | Extend an active plan's claims. Free paths are granted at once; held paths wait (the plan keeps its fork and lease) until their holders land or release. An amendment that would close a wait cycle is refused with 409 `deadlock`. |
+| POST | `/plans/:id/amend` `{claims[]}` | Extend an active plan's claims. A too-broad new path is refused with 422 `claim_too_broad`. Free paths are granted at once; held paths wait (the plan keeps its fork and lease) until their holders land or release. An amendment that would close a wait cycle is refused with 409 `deadlock`. |
 | POST | `/plans/:id/land` `{summary?, evidence?}` | Merge gate: land onto trunk, or 409 with the drifted paths. |
 | POST | `/plans/:id/release` | Abandon a plan and free its airspace. |
 | GET | `/state` | Active plans, recent lands (with their paths), stats. |
@@ -70,7 +70,7 @@ The UI lives in `web/` and is served with Workers Static Assets: plain HTML, CSS
 
 ## Agents: MCP
 
-Tower is agent-agnostic. Any agent that speaks MCP can coordinate through it, and anything else can use the HTTP API above. Each trunk has an MCP endpoint at `/repos/:repo/mcp` (Streamable HTTP, same bearer key). Its tools are `file_plan`, `wait_for_clearance`, `amend_claims`, `check`, `land`, `release`, `why` and `state`. The server's instructions teach the protocol, so the agent's prompt only needs the task and the repo name. Agents use plain `git` with the fork remote and token that `wait_for_clearance` returns.
+Tower is agent-agnostic. Any agent that speaks MCP can coordinate through it, and anything else can use the HTTP API above. Each trunk has an MCP endpoint at `/repos/:repo/mcp` (Streamable HTTP, same bearer key). Its tools are `suggest_claims`, `file_plan`, `wait_for_clearance`, `amend_claims`, `check`, `land`, `release`, `why` and `state`. The server's instructions teach the protocol, so the agent's prompt only needs the task and the repo name. Agents use plain `git` with the fork remote and token that `wait_for_clearance` returns.
 
 ```sh
 # Claude Code

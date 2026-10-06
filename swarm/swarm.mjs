@@ -68,7 +68,7 @@ async function tasks() {
 function prompt(name, task) {
 	return `You are agent "${name}", one of several agents working concurrently on the Git repository "${args.repo}". You do not have a copy of it yet.
 
-All coordination goes through the "tower" MCP tools. Follow the tower server's instructions exactly: file a plan claiming every path you will change (use your agent name), wait for clearance, clone your fork into ./work, edit only claimed paths (amend claims first if you need more), commit, push, and land.
+All coordination goes through the "tower" MCP tools. Follow the tower server's instructions exactly: read the code first (suggest_claims, why), file a plan claiming the specific files you will change and any new files by exact path (use your agent name; never a whole top-level directory), wait for clearance, clone your fork into ./work, edit only claimed paths (amend claims first if you need more), commit, push, and land.
 
 If the repository defines checks (for example "npm run typecheck" or "npm test"), run them in your fork before landing and include the results in your evidence. If you cannot finish, release your plan.
 
