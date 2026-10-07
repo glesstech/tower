@@ -16,17 +16,18 @@ import { branch, type Core, json, type Plan, plan as getPlan, repo, serial, trun
 import { bump, emit } from "./events";
 import { close } from "./plans";
 import { assess, queue } from "./review";
+import { advanceTree } from "./trunk";
 
-export async function changes(t: Core, plan: Plan): Promise<{ head: string; changes: Change[]; drift: string[] }> {
+export async function changes(t: Core, plan: Plan): Promise<{ head: string; commit: ArtifactsCommitMetadata; changes: Change[]; drift: string[] }> {
 	if (plan.status !== "cleared" || !plan.fork || !plan.base) throw new Error(`plan ${plan.id} is not in flight`);
 	const br = await branch(t);
 	using fork = await t.env.ARTIFACTS.get(plan.fork);
 	const [head] = await fork.log({ ref: br, limit: 1 });
 	if (!head) throw new Error(`fork ${plan.fork} has no commits on ${br}`);
-	const [before, after] = await Promise.all([fork.readCommit(plan.base), fork.readCommit(head.hash)]);
-	const changes = await diffTrees(fork, before!.treeHash, after!.treeHash);
+	const before = await fork.readCommit(plan.base);
+	const changes = await diffTrees(fork, before!.treeHash, head.treeHash);
 	const drift = changes.map((c) => c.path).filter((p) => !covers(plan.claims, p));
-	return { head: head.hash, changes, drift };
+	return { head: head.hash, commit: head, changes, drift };
 }
 
 export async function check(t: Core, id: string) {
@@ -42,14 +43,14 @@ export async function check(t: Core, id: string) {
 export async function land(t: Core, id: string, body: LandBody) {
 	const plan = getPlan(t, id);
 	if (plan.review) return json({ error: "awaiting human review", review: plan.review }, 409);
-	const { head, changes: changed, drift } = await changes(t, plan);
+	const { head, commit: agentCommit, changes: changed, drift } = await changes(t, plan);
 	if (!changed.length) return json({ error: "nothing to land" }, 400);
 	if (drift.length) {
 		bump(t, "drift_blocked");
 		emit(t, "drift", { planId: id, agent: plan.agent, paths: drift, blocked: true });
 		return json({ error: "changes outside lease", drift, claims: plan.claims.map((c) => c.path) }, 409);
 	}
-	const ready = await prepare(t, plan, head, changed);
+	const ready = await prepare(t, plan, agentCommit, changed);
 
 	return serial(t, async () => {
 		const now = getPlan(t, id);
@@ -64,15 +65,11 @@ export async function land(t: Core, id: string, body: LandBody) {
 
 type Prepared = { agentCommit: ArtifactsCommitMetadata; fork: Pick<ArtifactsRepo, "readBlob"> };
 
-// Read what a land needs from the fork: the agent's commit (for its message and author) and
-// every blob it changed, into the tower's blob cache. Needs no lock.
-async function prepare(t: Core, plan: Plan, head: string, changed: Change[]): Promise<Prepared> {
+// Read every blob a land changed from the fork into the tower's blob cache, and keep the
+// agent's commit (from changes()) for its message and author. Needs no lock.
+export async function prepare(t: Core, plan: Plan, agentCommit: ArtifactsCommitMetadata, changed: Change[]): Promise<Prepared> {
 	using fork = await t.env.ARTIFACTS.get(plan.fork!);
-	const [agentCommit] = await Promise.all([
-		fork.readCommit(head),
-		...changed.filter((c) => c.op === "upsert").map((c) => t.blobs.read(fork, c.hash)),
-	]);
-	if (!agentCommit) throw new Error(`commit ${head} missing in fork ${plan.fork}`);
+	await Promise.all(changed.filter((c) => c.op === "upsert").map((c) => t.blobs.read(fork, c.hash)));
 	// The handle above is disposed when this returns; the workspace reads the cache, and only
 	// falls back to the fork (a fresh handle) if the cache was emptied meanwhile.
 	const name = plan.fork!;
@@ -94,9 +91,9 @@ async function prepare(t: Core, plan: Plan, head: string, changed: Change[]): Pr
 export type LandBody = { summary?: string; evidence?: unknown; author?: Author };
 
 // Overlay a fork's changes onto trunk and close the plan as landed. Callers hold the serial
-// queue and have already checked drift; `ready` is what prepare() read outside it, if anything.
-export async function commit(t: Core, plan: Plan, head: string, changed: Change[], body: LandBody, risk: Risk, ready?: Prepared) {
-	const { agentCommit, fork } = ready ?? (await prepare(t, plan, head, changed));
+// queue and have already checked drift; `ready` is what prepare() read.
+export async function commit(t: Core, plan: Plan, head: string, changed: Change[], body: LandBody, risk: Risk, ready: Prepared) {
+	const { agentCommit, fork } = ready;
 	const br = await branch(t);
 	using trunk = await t.env.ARTIFACTS.get(repo(t));
 	if (t.workspace?.branch !== br) {
@@ -129,11 +126,12 @@ export async function commit(t: Core, plan: Plan, head: string, changed: Change[
 		console.error(`land ${plan.id}: retrying once:`, err);
 		t.trunkToken = null;
 		const [top] = await trunk.log({ ref: br, limit: 1 });
-		if (top && (await trunk.readCommit(top.hash))?.message.includes(`\nTower-Plan: ${plan.id}\n`)) landed = { parent: "", sha: top.hash };
+		if (top?.message.includes(`\nTower-Plan: ${plan.id}\n`)) landed = { parent: "", sha: top.hash };
 		else landed = await push();
 	}
 	const { parent, sha } = landed;
 	advanceFiles(t, parent, sha, changed);
+	advanceTree(t, parent, sha, changed);
 
 	t.sql.exec(
 		"INSERT INTO lands (sha, plan_id, agent, task, summary, evidence, landed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -176,11 +174,14 @@ function advanceFiles(t: Core, parent: string, sha: string, changed: Change[]) {
 export function why(t: Core, path: string, limit?: string | null) {
 	if (!path) throw new Error("path is required");
 	const n = Math.min(Math.max(Number(limit) || 20, 1), 1000);
+	// Everything under the path as a directory: a range on the path index ("0" sorts right
+	// after "/"), which LIKE can't use and which takes "_" and "%" in a path literally.
+	const dir = path.replace(/\/?$/, "/");
 	return t.sql
 		.exec<{ sha: string; plan_id: string; agent: string; task: string; summary: string; evidence: string; landed_at: number }>(
 			`SELECT DISTINCT l.* FROM lands l JOIN land_paths p ON p.sha = l.sha
-			 WHERE p.path = ? OR p.path LIKE ? ORDER BY l.landed_at DESC LIMIT ?`,
-			path, `${path.replace(/\/?$/, "/")}%`, n,
+			 WHERE p.path = ? OR (p.path >= ? AND p.path < ?) ORDER BY l.landed_at DESC LIMIT ?`,
+			path, dir, `${dir.slice(0, -1)}0`, n,
 		)
 		.toArray()
 		.map((r) => ({ ...r, evidence: JSON.parse(r.evidence) }));

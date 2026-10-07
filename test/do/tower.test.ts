@@ -431,6 +431,22 @@ describe("dashboard", () => {
 		expect((await t.call("GET", "/why?path=src/&limit=3")).body).toHaveLength(3);
 	});
 
+	it("matches /why paths literally, so _ and case don't widen a directory", async () => {
+		const t = await tower();
+		await runInDurableObject(t.stub, (instance: Tower) => {
+			const sql = (instance as any).sql as SqlStorage;
+			["src/a_b/x.ts", "src/axb/y.ts", "SRC/a_b/z.ts", "src/a_b.ts"].forEach((path, i) => {
+				const sha = String(i).padStart(40, "0");
+				sql.exec("INSERT INTO lands VALUES (?, ?, 'a', 'task', 'summary', 'null', ?)", sha, `p${i}`, i);
+				sql.exec("INSERT INTO land_paths VALUES (?, ?)", sha, path);
+			});
+		});
+		const why = async (path: string) => ((await t.call("GET", `/why?path=${path}`)).body as unknown as { plan_id: string }[]).map((l) => l.plan_id);
+		expect(await why("src/a_b")).toEqual(["p0"]);
+		expect(await why("src/a_b.ts")).toEqual(["p3"]);
+		expect(await why("src/")).toEqual(["p3", "p1", "p0"]);
+	});
+
 	it("includes each land's paths in the state snapshot", async () => {
 		const t = await tower();
 		const a = await t.file("a", ["src/a.ts"]);
@@ -904,5 +920,85 @@ describe("scale", () => {
 			expect((await t.call("POST", `/plans/${p.plan.id}/land`, { summary: agent })).status).toBe(200);
 		}
 		expect(tokens).toBe(1);
+	});
+
+	// A workspace that commits each land onto the fake trunk and, like TrunkWorkspace, knows the
+	// HEAD it left. `failOnce` pushes the first land, then reports failure.
+	async function landsOntoTrunk(t: Awaited<ReturnType<typeof tower>>, opts: { failOnce?: boolean } = {}) {
+		const trunk = t.artifacts.repos.get(REPO)!;
+		const files: Snapshot = { ...SEED };
+		let fail = opts.failOnce;
+		await runInDurableObject(t.stub, (instance: Tower) => {
+			const workspace = {
+				branch: "main",
+				current: null as string | null,
+				land: async (o: { fork: ArtifactsRepo; changes: { op: string; path: string; hash?: string }[]; message: string }) => {
+					for (const c of o.changes) {
+						if (c.op === "delete") delete files[c.path];
+						else files[c.path] = await (await o.fork.readBlob(c.hash!))!.text();
+					}
+					const sha = await trunk.commit(files, o.message);
+					if (fail) {
+						fail = false;
+						throw new Error("push reported failure");
+					}
+					workspace.current = sha;
+					return sha;
+				},
+			};
+			(instance as any).workspace = workspace;
+		});
+		return trunk;
+	}
+
+	const evidence = { summary: "s", evidence: { checks: "npm test: ok" } };
+
+	it("carries trunk's file list over a land instead of walking trunk again", async () => {
+		const t = await tower();
+		const trunk = await landsOntoTrunk(t);
+		expect((await t.call("GET", "/tree")).body.paths).toEqual(["README.md", "docs/guide.md", "src/a.ts", "src/b.ts"]);
+		const p = await t.file("a", ["src/a.ts", "src/new/c.ts", "docs/guide.md"]);
+		const { "docs/guide.md": _, ...kept } = SEED;
+		await t.push(p.plan.id, { ...kept, "src/a.ts": "a2\n", "src/new/c.ts": "c\n" });
+		expect((await t.call("POST", `/plans/${p.plan.id}/land`, evidence)).status).toBe(200);
+
+		let reads = 0;
+		const readTree = trunk.readTree.bind(trunk);
+		trunk.readTree = (hash: string) => (reads++, readTree(hash));
+		const logs = t.artifacts.calls.log;
+		expect((await t.call("GET", "/tree")).body).toEqual({
+			head: await trunk.head(),
+			paths: ["README.md", "src/a.ts", "src/b.ts", "src/new/c.ts"],
+			truncated: false,
+		});
+		expect(reads).toBe(0);
+		expect(t.artifacts.calls.log).toBe(logs);
+	});
+
+	it("lands with one commit read on the fork, using the head that log returned", async () => {
+		const t = await tower();
+		await landsOntoTrunk(t);
+		const p = await t.file("a", ["src/a.ts"]);
+		await t.push(p.plan.id, { ...SEED, "src/a.ts": "a2\n" });
+		const fork = t.artifacts.repos.get((await t.plan(p.plan.id)).fork)!;
+		let reads = 0;
+		const readCommit = fork.readCommit.bind(fork);
+		fork.readCommit = (hash: string) => (reads++, readCommit(hash));
+		const landed = await t.call("POST", `/plans/${p.plan.id}/land`, { evidence: evidence.evidence });
+		expect(landed.status).toBe(200);
+		expect(reads).toBe(1);
+		const [top] = await t.artifacts.repos.get(REPO)!.log({ limit: 1 });
+		expect(top.message.split("\n")[0]).toBe("a work");
+	});
+
+	it("takes a push that went through but reported failure as the land, not a reason to land twice", async () => {
+		const t = await tower();
+		const trunk = await landsOntoTrunk(t, { failOnce: true });
+		const p = await t.file("a", ["src/a.ts"]);
+		await t.push(p.plan.id, { ...SEED, "src/a.ts": "a2\n" });
+		const landed = await t.call("POST", `/plans/${p.plan.id}/land`, evidence);
+		expect(landed.status).toBe(200);
+		expect(landed.body.sha).toBe(await trunk.head());
+		expect((await trunk.log()).map((c) => c.message.split("\n")[0])).toEqual(["s", "seed"]);
 	});
 });

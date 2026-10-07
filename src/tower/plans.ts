@@ -56,7 +56,10 @@ export async function file(t: Core, body: { agent?: string; task?: string; claim
 	if (blockedBy.length) bump(t, "conflicts_prevented");
 	if (hygiene.forced) bump(t, "claims_forced");
 	// A plan waiting on a claim tower would have refused: what broad claims cost everyone else.
-	if (files && blockedBy.some((b) => broad(t, files, getPlan(t, b).claims).length)) bump(t, "blocked_by_broad");
+	if (files && blockedBy.length) {
+		const lim = limits(t);
+		if (blockedBy.some((b) => broad(lim, files, getPlan(t, b).claims).length)) bump(t, "blocked_by_broad");
+	}
 	emitPlan(t, "filed", id, hygiene.data);
 	emitPlan(t, next, id, next === "holding" ? { blockedBy } : {});
 	return { ...(await status(t, id)), ...hygiene.data };
@@ -87,8 +90,7 @@ function limits(t: Core): Limits {
 	};
 }
 
-function broad(t: Core, files: { paths: string[] }, claims: Claim[]) {
-	const lim = limits(t);
+function broad(lim: Limits, files: { paths: string[] }, claims: Claim[]) {
 	return measure(claims, files.paths).claims.flatMap((c) => {
 		const reason = tooBroad(c, lim);
 		return reason ? [{ ...c, reason }] : [];
@@ -101,7 +103,7 @@ function broad(t: Core, files: { paths: string[] }, claims: Claim[]) {
 function vet(t: Core, files: { paths: string[]; truncated: boolean } | null, claims: Claim[], task: string, force: boolean) {
 	if (!files) return { forced: false, data: {} };
 	const coverage = measure(claims, files.paths);
-	const wide = broad(t, files, claims);
+	const wide = broad(limits(t), files, claims);
 	if (wide.length && !force) {
 		bump(t, "claims_refused");
 		const within = wide.map((w) => parseClaim(w.path));

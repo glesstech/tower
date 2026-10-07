@@ -14,7 +14,7 @@ import { type FileChange, importersOf, importSpecifiers, lineDelta, type Overlap
 import type { Change } from "../treediff";
 import { branch, type Core, json, type Plan, type PlanRow, plan as getPlan, type Review, repo, serial, toPlan, trunkHead } from "./core";
 import { bump, emitPlan } from "./events";
-import { changes, commit, type LandBody } from "./landing";
+import { changes, commit, type LandBody, prepare } from "./landing";
 import { close } from "./plans";
 
 const FILE_LIMIT = 5000;
@@ -256,14 +256,14 @@ async function one(t: Core, id: string, decision: Decision, note?: string): Prom
 	}
 
 	// Approve lands exactly what was scored; a fork that moved since goes back for a fresh land.
-	const { head, changes: changed, drift } = await changes(t, plan);
+	const { head, commit: agentCommit, changes: changed, drift } = await changes(t, plan);
 	if (head !== review.head || drift.length || !changed.length) {
 		resume(t, id);
 		const reason = head !== review.head ? "fork changed since it was reviewed" : drift.length ? "fork drifted outside its lease" : "nothing to land";
 		emitPlan(t, "sent_back", id, { note: reason, risk: review.risk });
 		return { outcome: "sent_back", reason };
 	}
-	const landed = await commit(t, plan, head, changed, review, review.risk);
+	const landed = await commit(t, plan, head, changed, review, review.risk, await prepare(t, plan, agentCommit, changed));
 	t.sql.exec("UPDATE plans SET review = NULL WHERE id = ?", id);
 	bump(t, "reviews_approved");
 	return { outcome: "landed", ...landed };
