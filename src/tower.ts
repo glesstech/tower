@@ -18,7 +18,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import type { TrunkWorkspace } from "./land";
-import { type Core, json, setMeta, type Tree } from "./tower/core";
+import { type Core, getMeta, json, setMeta, type Tree } from "./tower/core";
 import { events, live, state } from "./tower/events";
 import { check, land, why } from "./tower/landing";
 import { expire, heartbeat, schedule, touch } from "./tower/leases";
@@ -74,8 +74,24 @@ export class Tower extends DurableObject<Env> implements Core {
 			}
 			return json({ error: "not found" }, 404);
 		} catch (err) {
+			if (await this.trunkMissing(err)) return json({ error: "trunk not found", repo: getMeta(this, "repo") }, 404);
 			console.error(`${request.method} ${url.pathname}:`, err);
 			return json({ error: (err as Error).message }, 400);
+		}
+	}
+
+	// A NOT_FOUND may name a fork rather than trunk, so it only means "trunk not found" (404)
+	// once trunk itself fails to answer; one that was never created or was torn down won't.
+	private async trunkMissing(err: unknown): Promise<boolean> {
+		if ((err as ArtifactsError).code !== "NOT_FOUND") return false;
+		const name = getMeta(this, "repo");
+		if (!name) return true;
+		try {
+			using trunk = await this.env.ARTIFACTS.get(name);
+			await trunk.info();
+			return false;
+		} catch (e) {
+			return (e as ArtifactsError).code === "NOT_FOUND";
 		}
 	}
 

@@ -2,6 +2,9 @@
 // from each Tower's /state: every trunk for the operator key, otherwise only the public demo
 // trunk (TOWER_DEMO_REPO), so the list of repos never leaks without a key.
 //
+// The list is the way back from a page whose trunk is gone, so it never shows a dead trunk: the
+// operator's comes from Artifacts itself, and a configured demo that was torn down is dropped.
+//
 // The demo trunk is also watchable without a key: the same read-only routes the dashboard
 // key opens (see src/dashboard/access.ts), for that one repo only.
 
@@ -42,9 +45,20 @@ export function demoAccess(
 /** GET /repos: { demo, trunks }, with every trunk for the operator and only the demo otherwise. */
 export async function home(env: Env, operator: boolean): Promise<{ demo: string | null; trunks: Trunk[] }> {
 	const demo = env.TOWER_DEMO_REPO || null;
-	const names = operator ? await listTrunks(env) : demo ? [demo] : [];
+	const names = operator ? await listTrunks(env) : demo && (await exists(env, demo)) ? [demo] : [];
 	const trunks = await Promise.all(names.map(async (repo) => ({ repo, counts: await trunkCounts(env, repo) })));
-	return { demo, trunks };
+	return { demo: demo && names.includes(demo) ? demo : null, trunks };
+}
+
+// Only Artifacts' NOT_FOUND counts as gone; a transient failure keeps the trunk listed.
+async function exists(env: Env, name: string): Promise<boolean> {
+	try {
+		using trunk = await env.ARTIFACTS.get(name);
+		await trunk.info();
+		return true;
+	} catch (err) {
+		return (err as ArtifactsError).code !== "NOT_FOUND";
+	}
 }
 
 async function listTrunks(env: Env): Promise<string[]> {

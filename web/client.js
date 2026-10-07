@@ -45,9 +45,18 @@ export function nav() {
 	return bar;
 }
 
+/** A non-2xx API response: its status and the server's `error` message. */
+export class ApiError extends Error {
+	/** @param {number} status @param {string} message */
+	constructor(status, message) {
+		super(message);
+		this.status = status;
+	}
+}
+
 /**
  * GET (or other method) a /repos/:repo API route with the page's key. Resolves to the JSON
- * body; rejects on a non-2xx response.
+ * body; rejects on a non-2xx response with an ApiError.
  * @param {string} path e.g. "/tree"
  * @param {RequestInit} [init]
  * @returns {Promise<any>}
@@ -56,8 +65,31 @@ export async function api(path, init = {}) {
 	const headers = new Headers(init.headers);
 	headers.set("Authorization", "Bearer " + KEY);
 	const res = await fetch(BASE + path, { ...init, headers });
-	if (!res.ok) throw new Error(path + ": " + res.status);
+	if (!res.ok) {
+		const body = await res.json().catch(() => null);
+		throw new ApiError(res.status, body?.error || path + ": " + (res.statusText || res.status));
+	}
 	return res.json();
+}
+
+/** Whether an API failure means this page can't work at all: a bad key or a missing trunk. */
+export function fatal(/** @type {unknown} */ err) {
+	return err instanceof ApiError && (err.status === 401 || err.message === "trunk not found");
+}
+
+/** A note saying what a failed API call actually means, linking home when the trunk is gone. */
+export function failure(/** @type {unknown} */ err, cls = "note") {
+	const note = el("div", cls);
+	if (err instanceof ApiError && err.status === 401) {
+		note.textContent = KEY ? "This key can't read this trunk." : "This trunk needs a key: add ?key= to the URL.";
+	} else if (err instanceof ApiError && err.message === "trunk not found") {
+		const home = el("a", "", "See all trunks");
+		home.href = withKey("/");
+		note.append("No trunk named " + REPO + "; it may have been torn down. ", home, ".");
+	} else {
+		note.textContent = err instanceof Error ? err.message : String(err);
+	}
+	return note;
 }
 
 /**

@@ -393,6 +393,27 @@ describe("dashboard", () => {
 		}
 	});
 
+	it("answers 404 for a trunk that was never created or was torn down", async () => {
+		const missing = await tower({ seed: false });
+		for (const path of ["/tree", "/blob?path=src/a.ts"]) {
+			expect(await missing.call("GET", path)).toEqual({ status: 404, body: { error: "trunk not found", repo: REPO } });
+		}
+
+		const t = await tower();
+		expect((await t.call("GET", "/tree")).status).toBe(200);
+		t.artifacts.repos.delete(REPO);
+		expect(await t.call("GET", "/tree")).toEqual({ status: 404, body: { error: "trunk not found", repo: REPO } });
+	});
+
+	it("keeps a missing fork from reading as a missing trunk", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/a.ts"]);
+		t.artifacts.repos.delete(a.plan.fork);
+		const res = await t.call("POST", `/plans/${a.plan.id}/check`);
+		expect(res.status).toBe(400);
+		expect(res.body.error).not.toBe("trunk not found");
+	});
+
 	it("returns a path's whole history from /why with ?limit=", async () => {
 		const t = await tower();
 		for (let i = 0; i < 22; i++) {

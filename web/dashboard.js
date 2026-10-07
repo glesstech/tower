@@ -12,7 +12,7 @@
 // Replay loads the trunk's event log (or a downloaded one) and plays it back through the same
 // model, so a finished run still tells its story.
 
-import { $, KEY, REPO, api, color, el, live, nav, withKey } from "./client.js";
+import { $, KEY, REPO, api, color, el, failure, fatal, live, nav, withKey } from "./client.js";
 import {
 	activePlans, amendmentOn, apply, applyState, createModel, firstLine, holdingOn, remember,
 	replayDelays, shortName, tint, toLand,
@@ -41,7 +41,7 @@ let rects = {};
 /** @type {{ timer: ReturnType<typeof setTimeout> | undefined, now: number } | null} set while replaying */
 let replay = null;
 
-nav();
+const bar = nav();
 $("repo").textContent = REPO;
 document.body.classList.add("view-" + VIEW);
 /** @type {HTMLAnchorElement} */ ($("v-ops")).href = withKey(location.pathname);
@@ -762,8 +762,17 @@ let resizeTimer;
 window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(layout, 150); });
 
 renderAll();
-live(handle, (status) => {
+const stopLive = live(handle, (status) => {
 	if (replay) return;
 	if (status === "live") setConn("live", "live");
 	else setConn("down", KEY ? "reconnecting…" : "no ?key= in URL");
+});
+
+// The live feed and /state come from the Tower alone, so they answer even for a trunk that was
+// torn down; /tree reads trunk itself. A bad key or a missing trunk stops the page, saying which.
+api("/tree").catch((err) => {
+	if (!fatal(err)) return;
+	stopLive();
+	setConn("down", "unavailable");
+	bar.after(failure(err, "note gone"));
 });

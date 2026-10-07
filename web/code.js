@@ -5,7 +5,7 @@
 // A directory shows its files, the lands under it, and who is in that airspace right now.
 // The open path lives in ?path= ("src/a.ts" for a file, "src/" for a directory, "" for root).
 
-import { $, REPO, ago, api, color, el, live, nav, withKey } from "./client.js";
+import { $, REPO, ago, api, color, el, failure, fatal, live, nav, withKey } from "./client.js";
 
 /** @typedef {{ path: string, dir: boolean }} Claim */
 /** @typedef {{ id: string, agent: string, task: string, status: string, claims: Claim[], blockedBy: string[] }} Plan */
@@ -209,8 +209,8 @@ function showFile(/** @type {number} */ mine) {
 			});
 			body.replaceChildren(table);
 		},
-		() => {
-			if (mine === seq) body.replaceChildren(el("div", "note", "not a file on trunk"));
+		(err) => {
+			if (mine === seq) body.replaceChildren(failure(err));
 		},
 	);
 }
@@ -246,8 +246,8 @@ function showWhy(/** @type {number} */ mine) {
 			if (!lands.length) return void box.appendChild(el("div", "none", "no landed plan has touched this path yet"));
 			for (const l of lands) box.appendChild(landEntry(l));
 		},
-		() => {
-			if (mine === seq) box.replaceChildren(el("div", "none", "could not load history"));
+		(err) => {
+			if (mine === seq) box.replaceChildren(failure(err, "none"));
 		},
 	);
 }
@@ -307,11 +307,12 @@ function setState(s) {
 }
 
 // The first view loads over HTTP, so it never waits on the live feed; the feed keeps it current.
-Promise.all([api("/state").then(setState), loadTree()]).then(show, () => {
-	$("body").replaceChildren(el("div", "note", "could not load trunk (is ?key= set?)"));
+Promise.all([api("/state").then(setState), loadTree()]).then(show, (err) => {
+	$("body").replaceChildren(failure(err));
+	if (fatal(err)) stopLive();
 });
 
-live((ev) => {
+const stopLive = live((ev) => {
 	if (ev.type === "state") {
 		setState(ev.state);
 		renderTree();
