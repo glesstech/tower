@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// Opt-in end-to-end check against a deployed tower (tower-dev by default). Spends real
+// Opt-in end-to-end check against a deployed tower, normally tower-dev. Spends real
 // Artifacts operations, so CI never runs it. It runs the sim on a fresh trunk and asserts:
 //   - all 8 agents landed and the drifting agent was blocked first
 //   - trunk passes `git fsck --strict` and has one commit per land on top of the seed
 //   - teardown leaves nothing from this run in the namespace
 //
-//   TOWER_API_KEY=$(cut -d= -f2 .dev.vars) npm run test:integration
+//   (set -a; . ./.dev.vars; npm run test:integration)
 //
 // The namespace check uses `wrangler artifacts repos list`, so wrangler must be logged in.
 
@@ -16,12 +16,12 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
-const BASE = process.env.TOWER_URL ?? "https://tower-dev.g12r.workers.dev";
+const BASE = process.env.TOWER_URL;
 const KEY = process.env.TOWER_API_KEY;
 const NAMESPACE = process.env.TOWER_NAMESPACE ?? "tower-dev";
 const AGENTS = 8;
 const REPO = `it-${Date.now().toString(36)}`;
-if (!KEY) throw new Error("set TOWER_API_KEY");
+if (!BASE || !KEY) throw new Error("set TOWER_URL (such as https://tower-dev.<subdomain>.workers.dev) and TOWER_API_KEY");
 
 async function api(method, path) {
 	const res = await fetch(`${BASE}/repos/${REPO}${path}`, { method, headers: { Authorization: `Bearer ${KEY}` } });
