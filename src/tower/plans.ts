@@ -221,25 +221,34 @@ export async function amend(t: Core, id: string, raw?: string[], force = false):
 	if (before.status !== "cleared" && before.status !== "holding") throw new Error(`plan ${id} is ${before.status}`);
 	const fresh = requested.filter((c) => !within(before.claims, c));
 	let hygiene: ReturnType<typeof vet> = { forced: false, data: {} };
+	let files: Awaited<ReturnType<typeof trunkFiles>> = null;
 	if (fresh.length) {
+		files = await trunkFiles(t);
 		try {
-			hygiene = vet(t, await trunkFiles(t), fresh, before.task, force);
+			hygiene = vet(t, files, fresh, before.task, force);
 		} catch (err) {
 			if (err instanceof ClaimTooBroad) return json({ granted: false, ...err.body }, 422);
 			throw err;
 		}
 	}
 	if (hygiene.forced) bump(t, "claims_forced");
-	return amendNow(t, id, requested, hygiene.data);
+	return amendNow(t, id, requested, hygiene.data, files?.paths);
 }
 
 // Everything after measuring runs without awaiting, so blockers can't change under it.
-function amendNow(t: Core, id: string, requested: Claim[], extra: Record<string, unknown>): Response {
+function amendNow(t: Core, id: string, requested: Claim[], extra: Record<string, unknown>, paths?: string[]): Response {
 	const reply = (body: Record<string, unknown>, status?: number) => json({ ...body, ...extra }, status);
 	const plan = getPlan(t, id);
 	if (plan.status !== "cleared" && plan.status !== "holding") throw new Error(`plan ${id} is ${plan.status}`);
 	const added = merge([], requested).filter((c) => !within(plan.claims, c));
 	if (!added.length) return reply({ granted: true, blockedBy: [], plan });
+	// For the dashboard: the whole lease's coverage once granted, and any path forced into it.
+	// (A held amendment granted later in close() keeps the coverage it was filed with.)
+	const amended = (claims: Claim[]) => ({
+		added: added.map((c) => c.path),
+		...(paths ? { coverage: measure(claims, paths) } : {}),
+		...(extra.forced ? { forced: extra.forced } : {}),
+	});
 
 	if (plan.status === "holding") {
 		const claims = [...plan.claims, ...added];
@@ -249,14 +258,15 @@ function amendNow(t: Core, id: string, requested: Claim[], extra: Record<string,
 			"UPDATE plans SET claims = ?, status = ?, blocked_by = ? WHERE id = ?",
 			JSON.stringify(claims), status, JSON.stringify(blockedBy), id,
 		);
-		emitPlan(t, "amended", id, { added: added.map((c) => c.path) });
+		emitPlan(t, "amended", id, amended(claims));
 		emitPlan(t, status, id, status === "holding" ? { blockedBy } : {});
 		return reply({ granted: true, blockedBy, plan: getPlan(t, id) });
 	}
 
 	if (!blockers(t, added, 0, id).length) {
-		t.sql.exec("UPDATE plans SET claims = ? WHERE id = ?", JSON.stringify([...plan.claims, ...added]), id);
-		emitPlan(t, "amended", id, { added: added.map((c) => c.path) });
+		const claims = [...plan.claims, ...added];
+		t.sql.exec("UPDATE plans SET claims = ? WHERE id = ?", JSON.stringify(claims), id);
+		emitPlan(t, "amended", id, amended(claims));
 		return reply({ granted: true, blockedBy: [], plan: getPlan(t, id) });
 	}
 

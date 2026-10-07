@@ -1,7 +1,8 @@
 // @ts-check
 // The live dashboard at /repos/:repo/dashboard, in two views over one model (web/model.js):
 //
-// - Operator (default): in-flight plans with their task, claims, fork and running time;
+// - Operator (default): in-flight plans with their task, claims (and their coverage of trunk,
+//   broad claims forced past tower's refusal highlighted), fork and running time;
 //   holding plans with who they wait on for which paths; held amendments and deadlock
 //   refusals; lands with their files and the agent's evidence (collapsed); and an event feed
 //   with drift rejections and their paths. Click any path for its /why.
@@ -14,7 +15,7 @@
 
 import { $, KEY, REPO, api, color, el, failure, fatal, live, nav, withKey } from "./client.js";
 import {
-	activePlans, amendmentOn, apply, applyState, createModel, firstLine, holdingOn, remember,
+	activePlans, amendmentOn, apply, applyState, behindBroad, coverageText, createModel, firstLine, holdingOn, remember,
 	replayDelays, shortName, tint, toLand,
 } from "./model.js";
 
@@ -24,7 +25,7 @@ import {
 /** @typedef {{ name: string, path: string, dir: boolean, depth: number, children: Record<string, TreeNode>, size: number, list: TreeNode[] }} TreeNode */
 /** @typedef {{ x: number, y: number, w: number, h: number }} Rect */
 
-const STATS = ["conflicts_prevented", "drift_blocked", "deadlocks_prevented", "landed"];
+const STATS = ["conflicts_prevented", "drift_blocked", "deadlocks_prevented", "claims_forced", "blocked_by_broad", "landed"];
 const VIEW = new URLSearchParams(location.search).get("view") === "map" ? "map" : "ops";
 const BACKFILL = 500;
 
@@ -308,11 +309,25 @@ function renderPlans() {
 		claims.appendChild(el("span", "k", "claims"));
 		claims.appendChild(pathsEl(p.claims.map((c) => c.path)));
 		row.appendChild(claims);
+		const h = m.hygiene[p.id];
+		if (h) {
+			// Coverage of trunk, and the broad paths this plan forced past tower's refusal.
+			const cov = el("div", "line" + (h.forced.length ? " forced" : ""));
+			cov.appendChild(el("span", "k", "covers"));
+			cov.appendChild(el("span", "", h.coverage ? coverageText(h.coverage) : "not measured"));
+			if (h.forced.length) {
+				cov.appendChild(document.createTextNode(" · forced broad claim "));
+				cov.appendChild(pathsEl(h.forced));
+				row.classList.add("forced");
+			}
+			row.appendChild(cov);
+		}
 
 		if (p.status === "holding") {
-			const w = el("div", "line");
+			const w = el("div", "line" + (behindBroad(m, p, all) ? " forced" : ""));
 			w.appendChild(el("span", "k", "⏳"));
 			w.appendChild(waitsEl(holdingOn(p, all)));
+			if (behindBroad(m, p, all)) w.appendChild(document.createTextNode(" (behind a broad claim)"));
 			row.appendChild(w);
 			holding.appendChild(row);
 			return;

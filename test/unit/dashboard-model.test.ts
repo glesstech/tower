@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-	PALETTE, activePlans, amendmentOn, apply, applyState, color, createModel, describe as describeEvent, holdingOn,
+	PALETTE, activePlans, amendmentOn, apply, applyState, behindBroad, color, coverageText, createModel, describe as describeEvent, holdingOn,
 	remember, replayDelays, resetColors, shortName,
 } from "../../web/model.js";
 
@@ -111,6 +111,43 @@ describe("reducing events", () => {
 		expect(m.lands.map((l) => l.summary)).toEqual(["first", "second"]);
 		expect(m.lands[1].evidence).toEqual({ checks: "ok" });
 		expect(m.seq).toBe(9);
+	});
+});
+
+describe("claim coverage", () => {
+	it("keeps each plan's coverage and forced claims from filed and amended events, across snapshots", () => {
+		const m = createModel();
+		const a = plan("a", "x-1", "cleared", ["src/"], 1);
+		const b = plan("b", "x-2", "holding", ["src/tower/events.ts"], 2);
+		applyState(m, { seq: 0, plans: [a, b], lands: [], stats: {} });
+		// Backfilled history: only remember() runs, and /state plans carry no coverage.
+		remember(m, { seq: 1, at: 1, type: "filed", planId: "a", agent: "x-1", plan: a, forced: ["src/"], coverage: { files: 15, share: 0.75, trunk: 20, claims: [] } });
+		remember(m, { seq: 2, at: 2, type: "filed", planId: "b", agent: "x-2", plan: b, coverage: { files: 1, share: 0.05, trunk: 20, claims: [] } });
+		expect(m.hygiene.a).toEqual({ coverage: { files: 15, share: 0.75, trunk: 20 }, forced: ["src/"] });
+		expect(m.hygiene.b).toEqual({ coverage: { files: 1, share: 0.05, trunk: 20 }, forced: [] });
+		applyState(m, { seq: 2, plans: [a, b], lands: [], stats: {} });
+		expect(m.hygiene.a.forced).toEqual(["src/"]);
+		expect(behindBroad(m, b, [a, b])).toBe(true);
+
+		// A granted amendment carries the whole lease's coverage.
+		remember(m, { seq: 3, at: 3, type: "amended", planId: "b", agent: "x-2", plan: b, added: ["web/model.js"], coverage: { files: 2, share: 0.1, trunk: 20, claims: [] } });
+		expect(m.hygiene.b.coverage).toEqual({ files: 2, share: 0.1, trunk: 20 });
+		expect(behindBroad(m, a, [a, b])).toBe(false);
+	});
+
+	it("flags forced claims in the feed", () => {
+		const m = createModel();
+		const a = plan("a", "x-1", "cleared", ["src/"], 1);
+		const e = describeEvent(m, { seq: 1, at: 1, type: "filed", planId: "a", agent: "x-1", plan: a, forced: ["src/"] })!;
+		expect(e).toMatchObject({ kind: "drift", paths: ["src/"] });
+		expect(e.text).toContain("forced broad claim");
+		expect(describeEvent(m, { seq: 2, at: 2, type: "filed", planId: "a", agent: "x-1", plan: a })!.kind).toBe("info");
+	});
+
+	it("says how much of trunk a plan covers", () => {
+		expect(coverageText({ files: 12, share: 0.03, trunk: 400 })).toBe("12 files · 3% of trunk");
+		expect(coverageText({ files: 1, share: 0.002, trunk: 500 })).toBe("1 file · <1% of trunk");
+		expect(coverageText({ files: 0, share: 0, trunk: 20 })).toBe("0 files · 0% of trunk");
 	});
 });
 

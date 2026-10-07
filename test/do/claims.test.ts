@@ -112,6 +112,11 @@ describe("claim hygiene", () => {
 		const granted = await t.call("POST", `/plans/${id}/amend`, { claims: ["src/tower/plans.ts"] });
 		expect(granted.body).toMatchObject({ granted: true, coverage: { files: 1 } });
 		expect(granted.body.plan.claims.map((c: Body) => c.path)).toEqual(["src/mcp.ts", "src/tower/plans.ts"]);
+
+		// The amended event measures the whole lease, for the dashboard.
+		const amended = (await t.call("GET", "/events")).body.events.find((e: Body) => e.type === "amended");
+		expect(amended).toMatchObject({ added: ["src/tower/plans.ts"], coverage: { files: 2, trunk: 20, share: 0.1 } });
+		expect(amended.forced).toBeUndefined();
 	});
 
 	it("tells a holding plan when its own broad claim is what overlaps", async () => {

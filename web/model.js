@@ -10,6 +10,8 @@
 /** @typedef {{ seq: number, at: number, kind: "info" | "land" | "drift" | "held", agent: string, text: string, paths: string[] }} FeedEntry */
 /** @typedef {{ at: number, paths: string[], cycle: string[] }} Deadlock */
 /** @typedef {{ plan: Plan, paths: string[] }} Wait */
+/** @typedef {{ files: number, share: number, trunk: number }} Coverage */
+/** @typedef {{ coverage: Coverage | null, forced: string[] }} Hygiene what a plan's claims cover of trunk, and the broad paths it forced */
 /**
  * @typedef {{
  *   plans: Record<string, Plan>,
@@ -18,6 +20,7 @@
  *   stats: Record<string, number>,
  *   feed: FeedEntry[],
  *   deadlocks: Record<string, Deadlock>,
+ *   hygiene: Record<string, Hygiene>,
  *   clearedAt: Record<string, number>,
  *   seq: number,
  * }} Model
@@ -27,7 +30,7 @@ export const FEED_MAX = 300;
 
 /** @returns {Model} */
 export function createModel() {
-	return { plans: {}, names: {}, lands: [], stats: {}, feed: [], deadlocks: {}, clearedAt: {}, seq: 0 };
+	return { plans: {}, names: {}, lands: [], stats: {}, feed: [], deadlocks: {}, hygiene: {}, clearedAt: {}, seq: 0 };
 }
 
 // ── colors ─────────────────────────────────────────────────────────────────
@@ -80,6 +83,12 @@ export function shortName(/** @type {string} */ agent) {
 	return parts.length ? parts[parts.length - 1] : agent;
 }
 
+/** "12 files · 3% of trunk", with "<1%" rather than a misleading 0%. @param {Coverage} c */
+export function coverageText(c) {
+	const pct = c.share > 0 && c.share < 0.01 ? "<1%" : Math.round(c.share * 100) + "%";
+	return c.files + (c.files === 1 ? " file" : " files") + " · " + pct + " of trunk";
+}
+
 /** The first line of a task. */
 export function firstLine(/** @type {string} */ text) { return (text || "").split("\n")[0]; }
 
@@ -126,6 +135,9 @@ export function holdingOn(p, all) { return waitsOn(p.claims, p.id, p.createdAt, 
 /** What a cleared plan's held amendment waits on. @param {Plan} p @param {Plan[]} all */
 export function amendmentOn(p, all) { return p.amendment ? waitsOn(p.amendment.claims, p.id, 0, all) : []; }
 
+/** Whether a holding plan waits on a plan that forced a broad claim. @param {Model} m @param {Plan} p @param {Plan[]} all */
+export function behindBroad(m, p, all) { return holdingOn(p, all).some((w) => (m.hygiene[w.plan.id]?.forced.length || 0) > 0); }
+
 /** Active plans, oldest first. @param {Model} m */
 export function activePlans(m) {
 	return Object.values(m.plans).filter(active).sort((a, b) => a.createdAt - b.createdAt);
@@ -137,8 +149,8 @@ export function activePlans(m) {
 export function agentOf(m, id) { return id ? m.names[id] || m.plans[id]?.agent || id : "?"; }
 
 /**
- * Replaces the model's plans, lands and stats with a /state snapshot. The feed, deadlocks
- * and clear times come from the event log, so they are kept.
+ * Replaces the model's plans, lands and stats with a /state snapshot. The feed, deadlocks,
+ * claim coverage and clear times come from the event log, so they are kept.
  * @param {Model} m @param {any} state
  */
 export function applyState(m, state) {
@@ -160,7 +172,7 @@ export function toLand(l) {
 }
 
 /**
- * Records what an event says happened (feed entry, deadlock, clear time) without touching
+ * Records what an event says happened (feed entry, deadlock, coverage, clear time) without touching
  * plans, lands or stats. Used alone to backfill history older than a snapshot.
  * @param {Model} m @param {any} ev
  */
@@ -170,6 +182,12 @@ export function remember(m, ev) {
 	if (ev.type === "cleared" && id) m.clearedAt[id] = ev.at;
 	if (ev.type === "deadlock" && id) m.deadlocks[id] = { at: ev.at, paths: ev.paths || [], cycle: ev.cycle || [] };
 	if ((ev.type === "amended" || ev.type === "landed" || ev.type === "released") && id) delete m.deadlocks[id];
+	// Only filed and granted-amendment events measure claims; /state plans don't carry it.
+	if ((ev.type === "filed" || ev.type === "amended") && id && (ev.coverage || ev.forced)) {
+		const h = m.hygiene[id] || (m.hygiene[id] = { coverage: null, forced: [] });
+		if (ev.coverage) h.coverage = { files: ev.coverage.files, share: ev.coverage.share, trunk: ev.coverage.trunk };
+		(ev.forced || []).forEach(/** @param {string} p */ (p) => { if (!h.forced.includes(p)) h.forced.push(p); });
+	}
 	const entry = describe(m, ev);
 	if (!entry) return;
 	if (m.feed.some((e) => e.seq === entry.seq && entry.seq > 0)) return;
@@ -220,11 +238,13 @@ export function describe(m, ev) {
 	/** @param {FeedEntry["kind"]} kind @param {string} text @param {string[]} [paths] @returns {FeedEntry} */
 	const entry = (kind, text, paths) => ({ seq: ev.seq || 0, at: ev.at || 0, kind, agent, text, paths: paths || [] });
 	switch (ev.type) {
-		case "filed": return entry("info", "filed: " + firstLine(ev.plan?.task || ""), (ev.plan?.claims || []).map(/** @param {Claim} c */ (c) => c.path));
+		case "filed":
+			if (ev.forced?.length) return entry("drift", "filed with a forced broad claim: " + firstLine(ev.plan?.task || ""), ev.forced);
+			return entry("info", "filed: " + firstLine(ev.plan?.task || ""), (ev.plan?.claims || []).map(/** @param {Claim} c */ (c) => c.path));
 		case "holding": return entry("held", "holding behind " + (names(ev.blockedBy) || "earlier plans"));
 		case "cleared": return entry("info", "cleared for takeoff");
 		case "provisioned": return entry("info", "got fork " + (ev.fork || ""));
-		case "amended": return entry("info", "amended claims", ev.added);
+		case "amended": return ev.forced?.length ? entry("drift", "amended with a forced broad claim", ev.forced) : entry("info", "amended claims", ev.added);
 		case "amendment_held": return entry("held", "amendment held behind " + names(ev.blockedBy), ev.paths);
 		case "deadlock": return entry("drift", "amendment refused (deadlock " + names(ev.cycle).replace(/, /g, " → ") + ")", ev.paths);
 		case "drift": return entry("drift", ev.blocked ? "land rejected: changes outside claims" : "check found changes outside claims", ev.paths);

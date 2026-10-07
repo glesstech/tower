@@ -43,7 +43,8 @@ section h2, #timeline h2, #why h2 { margin: 0 0 6px; font-size: 11px; color: var
 .head .time, .head .sha { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .line { font-size: 12px; color: var(--dim); margin-top: 2px; }
 .line .k { display: inline-block; min-width: 48px; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: #6e7681; }
-.line.held { color: #d29922; } .line.refused { color: var(--red); }
+.line.held { color: #d29922; } .line.refused { color: var(--red); } .line.forced { color: var(--red); }
+.plan.forced { background: rgba(248, 81, 73, .06); }
 .paths { display: inline; }
 code.path { font: 11px var(--mono); color: var(--text); background: rgba(255,255,255,.05); border-radius: 3px; padding: 0 4px; margin-right: 4px; cursor: pointer; }
 code.path:hover { background: var(--line); text-decoration: underline; }
