@@ -53,10 +53,11 @@ describe("claim hygiene", () => {
 	it("refuses a claim on a top-level directory, suggesting the files under it that fit the task", async () => {
 		const t = await tower();
 		const res = await t.call("POST", "/plans", { agent: "a", task: "Show lease expiry on plans", claims: ["src/", "README.md"] });
-		expect(res.status).toBe(400);
-		expect(res.body.error).toMatch(/^claim_too_broad: `src\/` covers 15 files, 75% of trunk/);
-		expect(res.body.error).toMatch(/Claim the files you will change instead, e\.g\. src\/tower\/leases\.ts, src\/tower\/plans\.ts/);
-		expect(res.body.error).toMatch(/force: true/);
+		expect(res.status).toBe(422);
+		expect(res.body).toMatchObject({ error: "claim_too_broad", broad: [{ path: "src/", files: 15 }] });
+		expect(res.body.suggested.slice(0, 2)).toEqual(["src/tower/leases.ts", "src/tower/plans.ts"]);
+		expect(res.body.message).toMatch(/^claim_too_broad: `src\/` covers 15 files, 75% of trunk/);
+		expect(res.body.message).toMatch(/force: true/);
 		expect((await t.call("GET", "/state")).body.plans).toEqual([]);
 		expect(await t.stats()).toMatchObject({ claims_refused: 1 });
 	});
@@ -117,6 +118,16 @@ describe("claim hygiene", () => {
 		const amended = (await t.call("GET", "/events")).body.events.find((e: Body) => e.type === "amended");
 		expect(amended).toMatchObject({ added: ["src/tower/plans.ts"], coverage: { files: 2, trunk: 20, share: 0.1 } });
 		expect(amended.forced).toBeUndefined();
+	});
+
+	it("grants a broad amendment with force and counts it", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/mcp.ts"]);
+		const forced = await t.call("POST", `/plans/${a.body.plan.id}/amend`, { claims: ["src/tower/"], force: true });
+		expect(forced.status).toBe(200);
+		expect(forced.body).toMatchObject({ granted: true });
+		expect(forced.body.plan.claims.map((c: Body) => c.path)).toEqual(["src/mcp.ts", "src/tower/"]);
+		expect(await t.stats()).toMatchObject({ claims_forced: 1 });
 	});
 
 	it("tells a holding plan when its own broad claim is what overlaps", async () => {
