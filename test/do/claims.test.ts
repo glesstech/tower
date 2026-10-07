@@ -53,10 +53,11 @@ describe("claim hygiene", () => {
 	it("refuses a claim on a top-level directory, suggesting the files under it that fit the task", async () => {
 		const t = await tower();
 		const res = await t.call("POST", "/plans", { agent: "a", task: "Show lease expiry on plans", claims: ["src/", "README.md"] });
-		expect(res.status).toBe(400);
-		expect(res.body.error).toMatch(/^claim_too_broad: `src\/` covers 15 files, 75% of trunk/);
-		expect(res.body.error).toMatch(/Claim the files you will change instead, e\.g\. src\/tower\/leases\.ts, src\/tower\/plans\.ts/);
-		expect(res.body.error).toMatch(/force: true/);
+		expect(res.status).toBe(422);
+		expect(res.body).toMatchObject({ error: "claim_too_broad", broad: [{ path: "src/", files: 15 }] });
+		expect(res.body.suggested.slice(0, 2)).toEqual(["src/tower/leases.ts", "src/tower/plans.ts"]);
+		expect(res.body.message).toMatch(/^claim_too_broad: `src\/` covers 15 files, 75% of trunk/);
+		expect(res.body.message).toMatch(/force: true/);
 		expect((await t.call("GET", "/state")).body.plans).toEqual([]);
 		expect(await t.stats()).toMatchObject({ claims_refused: 1 });
 	});
@@ -119,6 +120,16 @@ describe("claim hygiene", () => {
 		expect(amended.forced).toBeUndefined();
 	});
 
+	it("grants a broad amendment with force and counts it", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/mcp.ts"]);
+		const forced = await t.call("POST", `/plans/${a.body.plan.id}/amend`, { claims: ["src/tower/"], force: true });
+		expect(forced.status).toBe(200);
+		expect(forced.body).toMatchObject({ granted: true });
+		expect(forced.body.plan.claims.map((c: Body) => c.path)).toEqual(["src/mcp.ts", "src/tower/"]);
+		expect(await t.stats()).toMatchObject({ claims_forced: 1 });
+	});
+
 	it("tells a holding plan when its own broad claim is what overlaps", async () => {
 		const t = await tower();
 		await t.file("a", ["src/tower/plans.ts"]);
@@ -131,7 +142,9 @@ describe("claim hygiene", () => {
 	it("takes per-trunk limits from meta", async () => {
 		const t = await tower();
 		await t.meta("claim_max_files", "1");
-		expect((await t.file("a", ["docs/", "web/"])).body.error).toMatch(/`web\/` covers 2 files .*the limit is 1/);
+		const refused = await t.file("a", ["docs/", "web/"]);
+		expect(refused.status).toBe(422);
+		expect(refused.body.message).toMatch(/`web\/` covers 2 files .*the limit is 1/);
 		await t.meta("claim_max_files", "1000");
 		await t.meta("claim_min_files", "1000");
 		expect((await t.file("a", ["src/"])).status).toBe(201);
