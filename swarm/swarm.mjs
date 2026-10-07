@@ -12,6 +12,8 @@
 // pushes it, opens a GitHub PR with each agent's evidence and the combined check results, then
 // tears the trunk down so the next run starts from main. --checks "<cmd>" replaces the npm
 // typecheck/test default, for repos that don't use npm (e.g. --checks "go test ./...").
+// --timeout (minutes, default 30) counts from when tower first clears the agent's plan, so time
+// spent holding behind other agents doesn't eat into it; an agent never cleared stops at 3x.
 
 import { execFile, spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
@@ -94,7 +96,7 @@ async function init() {
 	log("swarm", `created trunk ${args.repo} from this directory's HEAD`);
 }
 
-function launch(agent, name, task, logDir, timeoutMs) {
+function launch(agent, name, task, logDir, clock) {
 	return new Promise(async (done) => {
 		const dir = await mkdtemp(join(tmpdir(), `swarm-${name}-`));
 		const vars = { prompt: prompt(name, task.text), name, mcp_url: `${REPO_URL}/mcp`, auth: `Bearer ${KEY}` };
@@ -103,13 +105,25 @@ function launch(agent, name, task, logDir, timeoutMs) {
 		}
 		const [cmd, ...argv] = fill(agent.cmd, vars);
 		const out = createWriteStream(join(logDir, `${name}.log`));
-		const child = spawn(cmd, argv, { cwd: dir, stdio: ["ignore", "pipe", "pipe"] });
+		// Its own process group, so a timeout stops the agent's children (npm, tests) too.
+		const child = spawn(cmd, argv, { cwd: dir, stdio: ["ignore", "pipe", "pipe"], detached: true });
+		const kill = () => {
+			try {
+				process.kill(-child.pid, "SIGTERM");
+			} catch {}
+		};
 		child.stdout.pipe(out);
 		child.stderr.pipe(out);
-		const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
+		let timer = setTimeout(kill, clock.backstopMs);
+		clock.start = () => {
+			clearTimeout(timer);
+			timer = setTimeout(kill, clock.workMs);
+		};
 		const finish = async (code) => {
 			clearTimeout(timer);
-			await rm(dir, { recursive: true, force: true }); // holds the API key in agent config files
+			kill(); // anything the agent left running in the background
+			// The dir holds the API key in agent config files; a failed cleanup mustn't end the run.
+			await rm(dir, { recursive: true, force: true, maxRetries: 5 }).catch((err) => log(name, `cleanup failed: ${err.message}`));
 			done(code);
 		};
 		child.on("error", (err) => (out.write(`\n${err}\n`), finish(-1)));
@@ -165,16 +179,34 @@ if (args["dry-run"]) {
 
 if (args.init) await init();
 await mkdir(args.logs, { recursive: true });
-const timeoutMs = Number(args.timeout) * 60_000;
+const workMs = Number(args.timeout) * 60_000;
+const clocks = new Map(work.map((w) => [w.name, { workMs, backstopMs: 3 * workMs, start: null, started: false, running: true }]));
+
+// Start each agent's work clock once tower clears its first plan, and heartbeat the plans of
+// agents whose process is still running: a coding agent can go quiet for longer than the lease
+// TTL while it edits and tests, and a lease should expire when its agent dies, not when it thinks.
+const watch = setInterval(async () => {
+	const { body } = await api("GET", "/state").catch(() => ({ body: null }));
+	for (const p of body?.plans ?? []) {
+		const clock = clocks.get(p.agent);
+		if (clock?.running) api("POST", `/plans/${p.id}/heartbeat`).catch(() => {});
+		if (p.status !== "cleared" || !clock?.start || clock.started) continue;
+		clock.started = true;
+		clock.start();
+		log(p.agent, `cleared; ${args.timeout} min work clock started`);
+	}
+}, 10_000);
 
 const codes = await Promise.all(
 	work.map(async (w) => {
 		log(w.name, `started (${w.task.text.split("\n")[0].slice(0, 60)})`);
-		const code = await launch(w.agent, w.name, w.task, args.logs, timeoutMs);
+		const code = await launch(w.agent, w.name, w.task, args.logs, clocks.get(w.name));
+		clocks.get(w.name).running = false;
 		log(w.name, `exited ${code}`);
 		return code;
 	}),
 );
+clearInterval(watch);
 
 // Report, and free any airspace left by agents that exited without landing.
 const { body: state } = await api("GET", "/state");

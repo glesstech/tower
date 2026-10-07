@@ -5,7 +5,7 @@
       "name": "claude",
       "detect": { "process": ["claude"], "env": ["CLAUDECODE"] },
       "cmd": [
-        "claude", "-p", "{prompt}",
+        "claude", "-p", "{prompt}", "--output-format", "stream-json", "--verbose",
         "--mcp-config", "mcp.json", "--strict-mcp-config",
         "--permission-mode", "acceptEdits",
         "--allowedTools", "mcp__tower__*", "Bash", "Read", "Edit", "Write"
