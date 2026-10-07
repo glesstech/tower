@@ -26,10 +26,15 @@ export class TrunkWorkspace {
 		readonly branch: string,
 	) {}
 
+	// Trunk HEAD as of this workspace's last land or checkout, or null if it must be re-read.
+	get current(): string | null {
+		return this.fs ? this.head : null;
+	}
+
 	async land(opts: {
 		token: string;
 		trunkHead: string;
-		fork: ArtifactsRepo;
+		fork: Pick<ArtifactsRepo, "readBlob">;
 		changes: Change[];
 		message: string;
 		author: Author;

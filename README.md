@@ -31,7 +31,7 @@ Plain Git finds out about conflicts at merge time, after the work is done. With 
 
 **Drift and the merge gate.** The tower diffs the fork's HEAD tree against the commit it forked from, using only the binding's `readCommit` and `readTree`. It descends only into subtrees whose hash changed. Any changed path outside the lease is drift: `POST …/check` reports it, and `POST …/land` refuses it with a 409. This needs no push-event subscription per fork. (Push events are subscribed per repo, so they're an optional live feed and not part of the core loop.)
 
-**Landing.** The binding can read Git objects but can't write them. So the tower keeps an in-memory isomorphic-git workspace of trunk. To land, it copies the fork's changed blobs into the workspace, rewrites only the trees on the changed paths, commits on top of trunk HEAD, and pushes. Landing is serialized inside the Durable Object, and the tower is trunk's only writer. Because leases are disjoint, the overlay is conflict-free by construction. Semantic conflicts are a different problem; review-by-exception is meant to handle those.
+**Landing.** The binding can read Git objects but can't write them. So the tower keeps an in-memory isomorphic-git workspace of trunk. To land, it copies the fork's changed blobs into the workspace, rewrites only the trees on the changed paths, commits on top of trunk HEAD, and pushes. Landing is serialized inside the Durable Object, and the tower is trunk's only writer. Throughput depends on how long each land holds that lock, so as little as possible happens inside it. The diff, the drift check and the fork's blobs are read before the lock is taken. Scoring reads trunk from the tower's own caches (each land carries trunk's file list forward). The trunk write token is reused, and trunk HEAD is taken from the last push. The fork is deleted after the lock is released. Because leases are disjoint, the overlay is conflict-free by construction. Semantic conflicts are a different problem; review-by-exception is meant to handle those.
 
 **Memory.** Each landed commit carries `Tower-Plan`, `Tower-Agent` and `Tower-Fork` trailers. The agent's evidence (prompt, plan, test results, and so on) is stored against the trunk SHA. `GET …/why?path=` answers why a path looks the way it does, not just who changed it last.
 
@@ -61,7 +61,7 @@ All routes are under `/repos/:repo` and require `Authorization: Bearer $TOWER_AP
 
 ## Dashboard
 
-Open `https://tower-dev.<subdomain>.workers.dev/repos/<repo>/dashboard?key=$TOWER_DASHBOARD_KEY`. Set the key with `npx wrangler secret put TOWER_DASHBOARD_KEY [--env dev]`; the operator key works too. The header counts conflicts prevented, drift blocked, deadlocks prevented and landed. The page has two views:
+Open `https://tower-dev.<subdomain>.workers.dev/repos/<repo>/dashboard?key=$TOWER_DASHBOARD_KEY`. Set the key with `npx wrangler secret put TOWER_DASHBOARD_KEY [--env dev]`; the operator key works too. The header counts conflicts prevented, drift blocked, deadlocks prevented and landed. Below it, a throughput strip covers the last 10 minutes in 15-second buckets, with one small chart per measure: lands/min as bars, queue depth (plans holding) and agents in flight as lines. Each shows its current value and its peak, and you can hover a bucket for its time and value. The page stays readable with hundreds of plans. Events are drawn at most once per frame. The operator lists show the oldest 40 rows and count the rest. Holding plans are also summarized as one line per contested path ("37 on `src/modules/m0.ts`, next: …"). With more than 40 active plans, the map drops per-agent labels (hover a dot instead) and shows each path's queue as a single count. The page has two views:
 
 - **Operator** (the default) lists in-flight plans with their agent, task, claims, fork and running time. Holding plans show what they wait on ("waiting on `claude-issue-11` for `src/tower.ts`"). In-flight plans also show held amendments and deadlock refusals. Lands are listed with their summary, files and sha, with the agent's evidence collapsed until you open it. The event feed lists every filing, hold, drift rejection (with its paths) and land, backfilled from the event log on load. Click any path to see why it looks the way it does. With the operator key this calls `/why`. The dashboard key can't read `/why`, so the page falls back to the lands it has seen.
 - **Map** (`?view=map`, for demos) draws trunk as a treemap with labeled top-level regions. Each in-flight agent is a colored dot over a tinted region that carries the agent's name. Holding plans are dashed. The last few lands stay outlined in green, and drift flashes red. A legend and the trunk timeline stay on screen.
@@ -131,6 +131,46 @@ npm run deploy     && npx wrangler secret put TOWER_API_KEY             # https:
 ```
 
 Cost: Artifacts bills operations and storage (Workers Paid includes 10,000 operations and 1 GB per month). Repos persist until deleted, which is why forks and sim trunks are cleaned up automatically.
+
+## Scale
+
+`npm run sim` drives hundreds of scripted agents through the full loop: file, wait, clone the fork, commit, push, land. Each agent picks one of `--modules` files from a Zipf distribution (`--zipf 1`, so `m0` is the hottest and the tail is quiet). Starts are spread over `--stagger` seconds, and git runs at most `--git` (24) at a time. When the run ends, the sim replays the event log and prints throughput. With `--seed`, it then clones trunk and checks for conflicts: every module must hold exactly the lines of the agents that picked it, and trunk must have exactly one commit per land. `--out run.json` saves the metrics and the full event log, and the dashboard's **Load log** replays the file.
+
+```sh
+TOWER_URL=https://tower-dev.<subdomain>.workers.dev TOWER_API_KEY=... \
+  npm run sim -- --repo scale --seed --agents 500 --modules 50 --stagger 30 --quiet --out scale.json
+```
+
+| Metric | Meaning |
+| --- | --- |
+| plans/min, lands/min | Filed and landed plans over the run, plus the busiest minute of lands |
+| time holding p50/p95 | From filing to clearance, read from the event log |
+| land latency p50/p95 | Client-side time for `POST …/land` |
+| max queue depth / in flight / active | Most plans holding, cleared, and both at once |
+| `artifactsCalls` | Calls the tower made into the Artifacts binding (`stats.artifacts_calls`), an upper bound on billed operations. Add the sim's own git clones and pushes. |
+| conflicts | Modules whose content on trunk isn't exactly what their agents wrote |
+
+**Recorded run (2026-10-06): 250 agents, 0 conflicts.** This ran against the deployed `tower-dev` Worker, whose server code predates the landing changes below: `npm run sim -- --repo scale28-r250 --seed --agents 250 --modules 50 --stagger 20 --quiet`. All 250 agents filed within 20 seconds, and up to 246 plans were active at once. The hottest module, `m0`, drew 51 of them, then `m1` 33 and `m2` 17. Every agent landed. Trunk ended with exactly one commit per land, and every module held exactly its agents' lines.
+
+| | |
+| --- | --- |
+| agents · modules · duration | 250 · 50 (Zipf 1) · 14 min 22 s |
+| plans/min · lands/min (busiest minute) | 17.4 · 17.4 (25) |
+| time holding p50 / p95 | 5 min 4 s / 12 min 5 s |
+| land latency p50 / p95 | 31.3 s / 114.5 s |
+| max queue depth · max in flight · max active | 202 · 44 · 246 |
+| conflicts prevented · conflicts on trunk · failed agents | 206 · 0 · 0 |
+| events logged | 3,795, of which 2,339 were repeated `holding` announcements |
+| Artifacts | ~10 tower calls per agent (123 for 12 agents, metered locally on both the recorded server code and the new code), plus 251 git pushes and 251 clones from the sim (counting the seed push and the verification clone): about 3,100 operations, or ~$0.45 beyond the included 10,000 |
+
+**Bottlenecks the run exposed:**
+
+- **Landing serialization, the ceiling.** Lands arrived every 2.6 s (p50), so landing topped out at about 20–25 a minute however many agents were ready. With 44 agents holding forks, a land waited up to two minutes for the lock. In the old code, the lock covered everything: the fork diff, risk scoring (a full trunk walk), trunk `log`/`info`, creating and revoking a token, the push, and deleting the fork. Now it covers scoring from caches and the push. With the same local setup (12 agents on one module, `wrangler dev` against `tower-dev` Artifacts), in-lock time per land fell from a median of 8.7 s (7.0–10.7 s) to 2.7 s (2.4–4.2 s), and land latency p50 from 8.3 s to 4.9 s. Local timings include the round trips from a laptop to Artifacts, so deployed times are lower in both cases.
+- **Broadcast fan-out.** Each land re-announced every plan queued behind it, because its `blockedBy` got shorter. That is O(queue²) events, each carrying the full plan, to every dashboard. A queued plan is now announced again only when it waits on someone new. The dashboard works out who is ahead on its own. The same 12-agent run logs 82 events instead of 137, and a queue of N plans costs N `holding` events instead of about N²/2. Closing a plan also re-checks only the plans that waited on it, against one parsed copy of the airspace rather than a re-query per plan.
+- **Fork creation** kept up: cleared to provisioned took 3.6 s at p50 and 4.7 s at p95 (7.7 s at most). **`/state`** stayed small: 93 KB with 239 active plans, answered in 0.2 s. Neither needed changing.
+- **Treemap and lists with hundreds of plans.** See Dashboard above. Replaying this run's log at 64× drew no frame slower than 17 ms.
+
+To re-measure the landing changes once they are deployed, run `npm run deploy:dev` (when no swarm is using `tower-dev`), then repeat the command above with `--out run.json`. Its `artifactsCalls` line then comes from the tower itself.
 
 ## Roadmap
 

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
 	PALETTE, activePlans, amendmentOn, apply, applyState, behindBroad, color, coverageText, createModel, describe as describeEvent, holdingOn,
-	remember, replayDelays, resetColors, shortName,
+	queues, remember, replayDelays, resetColors, sample, shortName, throughput,
 } from "../../web/model.js";
 
 const claim = (path: string) => ({ path, dir: path.endsWith("/") });
@@ -154,5 +154,75 @@ describe("claim coverage", () => {
 describe("replayDelays", () => {
 	it("caps idle gaps and scales by speed", () => {
 		expect(replayDelays([{ at: 0 }, { at: 1000 }, { at: 600_000 }], 4)).toEqual([0, 250, 500]);
+	});
+});
+
+describe("throughput", () => {
+	const ev = (type: string, p: ReturnType<typeof plan>, at: number, extra = {}) => ({ type, at, planId: p.id, agent: p.agent, plan: p, ...extra });
+
+	it("samples queue depth and agents in flight from plan events, merging bursts within a second", () => {
+		const m = createModel();
+		apply(m, ev("filed", plan("a", "agent-a", "cleared", ["x"], 1000), 1000));
+		apply(m, ev("filed", plan("b", "agent-b", "holding", ["x"], 1100), 1100));
+		apply(m, ev("filed", plan("c", "agent-c", "holding", ["x"], 1200), 1200));
+		expect(m.samples).toEqual([{ at: 1000, holding: 2, flying: 1 }]);
+		apply(m, ev("landed", plan("a", "agent-a", "landed", ["x"], 1000), 5000, { sha: "s1", paths: ["x"] }));
+		apply(m, ev("cleared", plan("b", "agent-b", "cleared", ["x"], 1100), 5000));
+		// Same instant: the land left 2 holding, then b cleared (1 in flight); the merge keeps the most.
+		expect(m.samples.at(-1)).toEqual({ at: 5000, holding: 2, flying: 1 });
+		apply(m, ev("filed", plan("d", "agent-d", "cleared", ["y"], 7000), 7000));
+		expect(m.samples.at(-1)).toEqual({ at: 7000, holding: 1, flying: 2 });
+		expect(m.landedAt).toEqual({ s1: 5000 });
+	});
+
+	it("buckets lands as a per-minute rate and carries counts across quiet buckets", () => {
+		const m = createModel();
+		m.samples = [{ at: 0, holding: 5, flying: 2 }, { at: 16_000, holding: 9, flying: 3 }, { at: 17_000, holding: 7, flying: 3 }];
+		m.landedAt = { a: 1000, b: 2000, c: 31_000, old: -100_000 };
+		m.plans = { p: plan("p", "agent-p", "holding", ["x"], 0) };
+		const t = throughput(m, 60_000, { buckets: 4, bucketMs: 15_000 });
+		expect(t.lands).toEqual([8, 0, 4, 0]); // 2 lands in 15s is 8/min
+		expect(t.holding).toEqual([5, 9, 7, 7]);
+		expect(t.flying).toEqual([2, 3, 3, 3]);
+		expect(t.now).toEqual({ landsPerMin: 3, holding: 1, flying: 0 });
+		expect(t.peak).toEqual({ landsPerMin: 8, holding: 9, flying: 3 });
+	});
+
+	it("keeps a bounded number of samples", () => {
+		const m = createModel();
+		for (let i = 0; i < 6000; i++) sample(m, i * 1000);
+		expect(m.samples.length).toBe(5000);
+		expect(m.samples[0].at).toBe(1_000_000);
+	});
+
+	it("reads land times from a snapshot", () => {
+		const m = createModel();
+		applyState(m, { plans: [], lands: [{ sha: "s", plan_id: "p", agent: "a", summary: "x", paths: [], landed_at: 42 }], stats: {} });
+		expect(m.landedAt).toEqual({ s: 42 });
+	});
+});
+
+describe("queues", () => {
+	it("groups holding plans by the paths they claim, biggest line first, with the next few in line", () => {
+		const plans = [
+			plan("a", "a", "cleared", ["m0"], 1),
+			...Array.from({ length: 5 }, (_, i) => plan("h" + i, "h" + i, "holding", ["m0"], 2 + i)),
+			plan("x", "x", "holding", ["m1", "m2"], 10),
+			plan("y", "y", "holding", ["m2", "m1"], 11),
+		];
+		const q = queues(plans);
+		expect(q.map((g) => [g.paths, g.count])).toEqual([[["m0"], 5], [["m1", "m2"], 2]]);
+		expect(q[0].next.map((p) => p.id)).toEqual(["h0", "h1", "h2"]);
+	});
+});
+
+describe("feed in a long line", () => {
+	it("names the first three plans ahead and counts the rest", () => {
+		const m = createModel();
+		const ahead = ["a", "b", "c", "d", "e"];
+		ahead.forEach((id) => { m.names[id] = "agent-" + id; });
+		const e = describeEvent(m, { type: "holding", seq: 1, at: 1, planId: "z", agent: "agent-z", blockedBy: ahead });
+		expect(e?.text).toBe("holding behind agent-a, agent-b, agent-c and 2 more");
+		expect(describeEvent(m, { type: "holding", seq: 2, at: 2, planId: "y", agent: "agent-y", blockedBy: ["a"] })?.text).toBe("holding behind agent-a");
 	});
 });
