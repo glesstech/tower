@@ -67,6 +67,92 @@ export interface Core {
 	treeCache: { head: string; tree: Promise<Tree> } | null;
 	// Relative import specifiers per source blob hash, for blast radius (see review.ts).
 	importSpecs: Map<string, string[]>;
+	// Trunk HEAD's blob paths and hashes. The tower is trunk's only writer, so each land moves
+	// it forward without re-walking trunk (see landing.ts and review.ts).
+	trunkFiles: { head: string; files: Map<string, string> } | null;
+	// Blob contents by hash: fork blobs read before a land takes the lock, and what scoring read.
+	blobs: BlobCache;
+	// A trunk write token reused across lands until it nears expiry; it never leaves the tower.
+	trunkToken: { id: string; plaintext: string; expiresAt: number } | null;
+	// Cleanup started inside the serial queue but not worth holding it for (see later()).
+	pending: Set<Promise<unknown>>;
+}
+
+// Run cleanup (deleting a closed plan's fork) without holding the serial queue for it. The
+// router awaits it before the request that started it ends (see settle()), so it isn't cut off.
+export function later(t: Core, work: Promise<unknown>) {
+	const p = work.catch((err) => console.error("cleanup:", err)).finally(() => t.pending.delete(p));
+	t.pending.add(p);
+}
+
+export async function settle(t: Core) {
+	while (t.pending.size) await Promise.all([...t.pending]);
+}
+
+// Blob bytes by hash, bounded by total size; it is emptied when full rather than evicting
+// one by one, which is plenty for a cache that only has to bridge one land's two phases.
+export class BlobCache {
+	private map = new Map<string, Uint8Array>();
+	private bytes = 0;
+	constructor(private limit = 32 * 1024 * 1024) {}
+
+	get(hash: string): Uint8Array | undefined {
+		return this.map.get(hash);
+	}
+
+	set(hash: string, data: Uint8Array) {
+		if (this.map.has(hash) || data.byteLength > this.limit) return;
+		if (this.bytes + data.byteLength > this.limit) this.clear();
+		this.map.set(hash, data);
+		this.bytes += data.byteLength;
+	}
+
+	clear() {
+		this.map.clear();
+		this.bytes = 0;
+	}
+
+	// A blob from the cache, else read from `repo` and cached. Null if the repo doesn't have it.
+	async read(repo: Pick<ArtifactsRepo, "readBlob">, hash: string): Promise<Uint8Array | null> {
+		const hit = this.get(hash);
+		if (hit) return hit;
+		const blob = await repo.readBlob(hash);
+		if (!blob) return null;
+		const data = new Uint8Array(await blob.arrayBuffer());
+		this.set(hash, data);
+		return data;
+	}
+}
+
+// Every call the tower makes into the Artifacts binding, and into the repo handles it returns,
+// counted in stats as artifacts_calls: an upper bound on the operations Artifacts bills. Counted
+// straight into the stats table (no event), so it costs the live feed nothing.
+const METERED = new WeakSet<object>();
+const UNCOUNTED = new Set(["then", "constructor", "toString", "toJSON", "valueOf"]);
+
+export function meter(t: Core) {
+	const raw = t.env.ARTIFACTS;
+	if (!raw || METERED.has(raw)) return;
+	(t as { env: Env }).env = { ...t.env, ARTIFACTS: metered(t, raw) };
+}
+
+function metered<T extends object>(t: Core, target: T): T {
+	const proxy = new Proxy(target, {
+		get(obj, prop) {
+			const value = Reflect.get(obj, prop);
+			if (typeof value !== "function") return value;
+			// Reflect, not value.apply/bind: on an RPC stub those would be remote method names.
+			if (typeof prop !== "string" || UNCOUNTED.has(prop)) return (...args: unknown[]) => Reflect.apply(value, obj, args);
+			return (...args: unknown[]) => {
+				t.sql.exec("INSERT INTO stats (key, value) VALUES ('artifacts_calls', 1) ON CONFLICT (key) DO UPDATE SET value = value + 1");
+				const out = Reflect.apply(value, obj, args);
+				// The repo handles get() returns are counted too.
+				return prop === "get" ? Promise.resolve(out).then((r) => (r && typeof r === "object" ? metered(t, r) : r)) : out;
+			};
+		},
+	});
+	METERED.add(proxy);
+	return proxy;
 }
 
 export const ACTIVE = "('holding', 'cleared')";
@@ -90,6 +176,14 @@ export function serial<T>(t: Core, fn: () => Promise<T>): Promise<T> {
 	const run = t.queue.then(fn, fn);
 	t.queue = run.catch(() => {});
 	return run;
+}
+
+// Trunk HEAD as the tower last left it, if it holds a workspace; else read from trunk.
+export async function trunkHead(t: Core, trunk: ArtifactsRepo, br: string): Promise<string | null> {
+	const known = t.workspace?.branch === br ? t.workspace.current : null;
+	if (known) return known;
+	const [head] = await trunk.log({ ref: br, limit: 1 });
+	return head?.hash ?? null;
 }
 
 export function plan(t: Core, id: string): Plan {

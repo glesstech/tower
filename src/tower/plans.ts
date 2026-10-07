@@ -21,6 +21,7 @@ import {
 	deleteRepo,
 	getMeta,
 	json,
+	later,
 	leaseTtl,
 	type Plan,
 	type PlanRow,
@@ -143,12 +144,23 @@ function waiting(t: Core, plan: Plan) {
 // Active plans this claim set overlaps: every cleared plan, plus holding plans filed earlier
 // (so a later plan queues behind an earlier one rather than jumping it).
 function blockers(t: Core, claims: Claim[], before: number, self?: string): string[] {
-	const rows = t.sql
-		.exec<PlanRow>(`SELECT * FROM plans WHERE status IN ${ACTIVE} ORDER BY created_at`)
+	return blockersIn(airspace(t), claims, before, self);
+}
+
+type Airspace = { id: string; status: Status; createdAt: number; claims: Claim[] }[];
+
+// Active plans with their claims parsed, oldest first.
+function airspace(t: Core): Airspace {
+	return t.sql
+		.exec<PlanRow>(`SELECT id, status, created_at, claims FROM plans WHERE status IN ${ACTIVE} ORDER BY created_at`)
 		.toArray()
-		.filter((r) => r.id !== self && (r.status === "cleared" || r.created_at < before));
-	return rows
-		.filter((r) => (JSON.parse(r.claims) as Claim[]).some((a) => claims.some((b) => claimsOverlap(a, b))))
+		.map((r) => ({ id: r.id, status: r.status, createdAt: r.created_at, claims: JSON.parse(r.claims) as Claim[] }));
+}
+
+function blockersIn(active: Airspace, claims: Claim[], before: number, self?: string): string[] {
+	return active
+		.filter((r) => r.id !== self && (r.status === "cleared" || r.createdAt < before))
+		.filter((r) => r.claims.some((a) => claims.some((b) => claimsOverlap(a, b))))
 		.map((r) => r.id);
 }
 
@@ -221,25 +233,34 @@ export async function amend(t: Core, id: string, raw?: string[], force = false):
 	if (before.status !== "cleared" && before.status !== "holding") throw new Error(`plan ${id} is ${before.status}`);
 	const fresh = requested.filter((c) => !within(before.claims, c));
 	let hygiene: ReturnType<typeof vet> = { forced: false, data: {} };
+	let files: Awaited<ReturnType<typeof trunkFiles>> = null;
 	if (fresh.length) {
+		files = await trunkFiles(t);
 		try {
-			hygiene = vet(t, await trunkFiles(t), fresh, before.task, force);
+			hygiene = vet(t, files, fresh, before.task, force);
 		} catch (err) {
 			if (err instanceof ClaimTooBroad) return json({ granted: false, ...err.body }, 422);
 			throw err;
 		}
 	}
 	if (hygiene.forced) bump(t, "claims_forced");
-	return amendNow(t, id, requested, hygiene.data);
+	return amendNow(t, id, requested, hygiene.data, files?.paths);
 }
 
 // Everything after measuring runs without awaiting, so blockers can't change under it.
-function amendNow(t: Core, id: string, requested: Claim[], extra: Record<string, unknown>): Response {
+function amendNow(t: Core, id: string, requested: Claim[], extra: Record<string, unknown>, paths?: string[]): Response {
 	const reply = (body: Record<string, unknown>, status?: number) => json({ ...body, ...extra }, status);
 	const plan = getPlan(t, id);
 	if (plan.status !== "cleared" && plan.status !== "holding") throw new Error(`plan ${id} is ${plan.status}`);
 	const added = merge([], requested).filter((c) => !within(plan.claims, c));
 	if (!added.length) return reply({ granted: true, blockedBy: [], plan });
+	// For the dashboard: the whole lease's coverage once granted, and any path forced into it.
+	// (A held amendment granted later in close() keeps the coverage it was filed with.)
+	const amended = (claims: Claim[]) => ({
+		added: added.map((c) => c.path),
+		...(paths ? { coverage: measure(claims, paths) } : {}),
+		...(extra.forced ? { forced: extra.forced } : {}),
+	});
 
 	if (plan.status === "holding") {
 		const claims = [...plan.claims, ...added];
@@ -249,14 +270,15 @@ function amendNow(t: Core, id: string, requested: Claim[], extra: Record<string,
 			"UPDATE plans SET claims = ?, status = ?, blocked_by = ? WHERE id = ?",
 			JSON.stringify(claims), status, JSON.stringify(blockedBy), id,
 		);
-		emitPlan(t, "amended", id, { added: added.map((c) => c.path) });
+		emitPlan(t, "amended", id, amended(claims));
 		emitPlan(t, status, id, status === "holding" ? { blockedBy } : {});
 		return reply({ granted: true, blockedBy, plan: getPlan(t, id) });
 	}
 
 	if (!blockers(t, added, 0, id).length) {
-		t.sql.exec("UPDATE plans SET claims = ? WHERE id = ?", JSON.stringify([...plan.claims, ...added]), id);
-		emitPlan(t, "amended", id, { added: added.map((c) => c.path) });
+		const claims = [...plan.claims, ...added];
+		t.sql.exec("UPDATE plans SET claims = ? WHERE id = ?", JSON.stringify(claims), id);
+		emitPlan(t, "amended", id, amended(claims));
 		return reply({ granted: true, blockedBy: [], plan: getPlan(t, id) });
 	}
 
@@ -323,14 +345,16 @@ export async function close(t: Core, plan: Plan, status: "landed" | "released" |
 	// Logged before the await below, so nothing filed meanwhile is ordered ahead of it.
 	emitPlan(t, status, plan.id, data);
 	// A landed fork's changes now live on trunk (and the commit trailers keep its name),
-	// so the fork and its tokens go away rather than accumulating storage.
-	if (plan.fork) await deleteRepo(t, plan.fork);
+	// so the fork and its tokens go away rather than accumulating storage. Lands wait in line
+	// for each other, not for this: nothing after it needs the fork gone.
+	if (plan.fork) later(t, deleteRepo(t, plan.fork));
 
 	const amending = t.sql
 		.exec<PlanRow>("SELECT * FROM plans WHERE status = 'cleared' AND amendment IS NOT NULL")
 		.toArray()
 		.map(toPlan)
 		.sort((a, b) => a.amendment!.requestedAt - b.amendment!.requestedAt);
+	let granted = false;
 	for (const { id } of amending) {
 		const p = getPlan(t, id); // re-read: an earlier grant in this loop may now block it
 		if (p.status !== "cleared" || !p.amendment) continue;
@@ -342,18 +366,30 @@ export async function close(t: Core, plan: Plan, status: "landed" | "released" |
 		const claims = merge(p.claims, p.amendment.claims);
 		t.sql.exec("UPDATE plans SET claims = ?, amendment = NULL WHERE id = ?", JSON.stringify(claims), id);
 		emitPlan(t, "amended", id, { added: p.amendment.claims.map((c) => c.path) });
+		granted = true;
 	}
 
+	// Only plans that waited on this one can clear, unless an amendment was just granted (it may
+	// now block anyone). With hundreds queued, the airspace is read and parsed once, not once per
+	// plan: a plan cleared in this loop was already a blocker of the ones behind it (as an
+	// earlier holding plan), so it stays one. A plan still holding is announced again only when
+	// it now waits on someone new; its line merely getting shorter would be an event per queued
+	// plan per land (the dashboard works out who is ahead itself).
+	const active = airspace(t);
 	for (const row of t.sql.exec<PlanRow>("SELECT * FROM plans WHERE status = 'holding' ORDER BY created_at").toArray()) {
-		const blockedBy = blockers(t, JSON.parse(row.claims), row.created_at, row.id);
+		const before: string[] = JSON.parse(row.blocked_by);
+		if (!granted && !before.includes(plan.id)) continue;
+		const blockedBy = blockersIn(active, JSON.parse(row.claims), row.created_at, row.id);
 		const next: Status = blockedBy.length ? "holding" : "cleared";
 		t.sql.exec("UPDATE plans SET status = ?, blocked_by = ? WHERE id = ?", next, JSON.stringify(blockedBy), row.id);
 		if (next === "cleared") {
 			// Its lease starts now: an agent that waited in line shouldn't expire the moment it clears.
 			t.sql.exec("UPDATE plans SET last_seen_at = ? WHERE id = ?", Date.now(), row.id);
+			const self = active.find((r) => r.id === row.id);
+			if (self) self.status = "cleared";
 			emitPlan(t, "cleared", row.id);
 		}
-		else if (JSON.stringify(blockedBy) !== row.blocked_by) emitPlan(t, "holding", row.id, { blockedBy });
+		else if (blockedBy.some((b) => !before.includes(b))) emitPlan(t, "holding", row.id, { blockedBy });
 	}
 }
 

@@ -1,7 +1,8 @@
 // @ts-check
 // The live dashboard at /repos/:repo/dashboard, in two views over one model (web/model.js):
 //
-// - Operator (default): in-flight plans with their task, claims, fork and running time;
+// - Operator (default): in-flight plans with their task, claims (and their coverage of trunk,
+//   broad claims forced past tower's refusal highlighted), fork and running time;
 //   holding plans with who they wait on for which paths; held amendments and deadlock
 //   refusals; lands with their files and the agent's evidence (collapsed); and an event feed
 //   with drift rejections and their paths. Click any path for its /why.
@@ -11,11 +12,17 @@
 //
 // Replay loads the trunk's event log (or a downloaded one) and plays it back through the same
 // model, so a finished run still tells its story.
+//
+// Built to stay readable with hundreds of plans: a throughput strip (lands/min, queue depth,
+// agents in flight) sits above both views; events are applied at once but drawn at most once
+// per frame; the operator lists show the oldest rows and summarize the rest (holding plans as
+// one line per contested path); and a crowded map drops per-agent labels and shows each
+// path's queue as a count.
 
 import { $, KEY, REPO, api, color, el, failure, fatal, live, nav, withKey } from "./client.js";
 import {
-	activePlans, amendmentOn, apply, applyState, createModel, firstLine, holdingOn, remember,
-	replayDelays, shortName, tint, toLand,
+	activePlans, amendmentOn, apply, applyState, behindBroad, coverageText, createModel, firstLine, holdingOn, queues, remember,
+	replayDelays, sample, shortName, throughput, tint, toLand,
 } from "./model.js";
 
 /** @typedef {import("./model.js").Plan} Plan */
@@ -24,9 +31,13 @@ import {
 /** @typedef {{ name: string, path: string, dir: boolean, depth: number, children: Record<string, TreeNode>, size: number, list: TreeNode[] }} TreeNode */
 /** @typedef {{ x: number, y: number, w: number, h: number }} Rect */
 
-const STATS = ["conflicts_prevented", "drift_blocked", "deadlocks_prevented", "landed"];
+const STATS = ["conflicts_prevented", "drift_blocked", "deadlocks_prevented", "claims_forced", "blocked_by_broad", "landed"];
 const VIEW = new URLSearchParams(location.search).get("view") === "map" ? "map" : "ops";
 const BACKFILL = 500;
+/** Rows drawn per operator list; the rest are summarized. */
+const ROWS = 40;
+/** Above this many active plans the map is "dense": smaller dots, no names, queue counts. */
+const DENSE = 40;
 
 let m = createModel();
 /** @type {Record<string, unknown>} evidence by land sha; live "landed" events don't carry it */
@@ -146,7 +157,14 @@ function step(ev) {
 	}
 	if (ev.plan && addPaths(ev.plan.claims.map(/** @param {{ path: string }} c */ (c) => c.path))) layout();
 	if (ev.type === "stat") renderCounters(ev.key);
-	renderAll();
+	renderSoon();
+}
+
+let frame = 0;
+/** Draws on the next frame, once, however many events arrive before it. */
+function renderSoon() {
+	if (frame) return;
+	frame = requestAnimationFrame(() => { frame = 0; renderAll(); });
 }
 
 /** The feed's history from before the snapshot: drift, deadlocks, clear times. @param {number} seq */
@@ -281,15 +299,100 @@ function empty(list, text) { list.appendChild(el("div", "none", text)); }
 
 function renderAll() {
 	renderCounters();
+	renderPulse();
 	if (VIEW === "ops") { renderPlans(); renderLands(); renderFeed(); }
 	else { renderOverlay(); renderTimeline(); }
+}
+
+// ── throughput strip ───────────────────────────────────────────────────────
+
+const SPARK_W = 200, SPARK_H = 32;
+
+/**
+ * One measure as a small chart: bars (counts per bucket) or a line (a level over time), each
+ * bucket a hover target with its time and value.
+ * @param {number[]} values @param {"bars" | "line"} kind @param {string} c @param {number} start @param {number} bucketMs @param {string} unit
+ */
+function sparkSvg(values, kind, c, start, bucketMs, unit) {
+	const NS = "http://www.w3.org/2000/svg";
+	const svg = document.createElementNS(NS, "svg");
+	svg.setAttribute("viewBox", "0 0 " + SPARK_W + " " + SPARK_H);
+	svg.setAttribute("preserveAspectRatio", "none");
+	svg.style.setProperty("--c", c);
+	const n = values.length, step = SPARK_W / n, top = Math.max(1, ...values);
+	const y = (/** @type {number} */ v) => SPARK_H - 1 - (v / top) * (SPARK_H - 3);
+	/** @param {string} tag @param {Record<string, string | number>} attrs */
+	const add = (tag, attrs) => {
+		const e = document.createElementNS(NS, tag);
+		Object.entries(attrs).forEach(([k, v]) => { e.setAttribute(k, String(v)); });
+		svg.appendChild(e);
+		return e;
+	};
+	add("line", { class: "base", x1: 0, x2: SPARK_W, y1: SPARK_H - 0.5, y2: SPARK_H - 0.5 });
+	if (kind === "bars") {
+		values.forEach((v, i) => { if (v) add("rect", { class: "bar", x: i * step + 1, y: y(v), width: Math.max(1, step - 2), height: SPARK_H - 1 - y(v), rx: 1 }); });
+	} else {
+		add("polyline", { class: "trace", points: values.map((v, i) => (i * step + step / 2).toFixed(1) + "," + y(v).toFixed(1)).join(" ") });
+	}
+	values.forEach((v, i) => {
+		const hit = add("rect", { class: "hit", x: i * step, y: 0, width: step, height: SPARK_H });
+		const t = document.createElementNS(NS, "title");
+		t.textContent = new Date(start + i * bucketMs).toLocaleTimeString() + " · " + Math.round(v) + " " + unit;
+		hit.appendChild(t);
+	});
+	return svg;
+}
+
+function renderPulse() {
+	const t = throughput(m, now());
+	const pulse = $("pulse");
+	pulse.textContent = "";
+	/** @param {string} label @param {number} value @param {number} peak @param {number[]} values @param {"bars" | "line"} kind @param {string} c @param {string} unit */
+	const tile = (label, value, peak, values, kind, c, unit) => {
+		const box = el("div", "spark");
+		const v = el("div", "v");
+		v.appendChild(el("b", "", String(Math.round(value))));
+		v.appendChild(el("span", "", label));
+		v.appendChild(el("small", "", "peak " + Math.round(peak)));
+		box.appendChild(v);
+		box.appendChild(sparkSvg(values, kind, c, t.start, t.bucketMs, unit));
+		pulse.appendChild(box);
+	};
+	tile("lands / min", t.now.landsPerMin, t.peak.landsPerMin, t.lands, "bars", "var(--green)", "lands/min");
+	tile("queue depth", t.now.holding, t.peak.holding, t.holding, "line", "#d29922", "holding");
+	tile("agents in flight", t.now.flying, t.peak.flying, t.flying, "line", "hsl(210, 85%, 62%)", "in flight");
+}
+
+// Keep the strip moving through quiet stretches (and sample levels that no event announced).
+setInterval(() => {
+	if (!replay) sample(m, Date.now());
+	renderPulse();
+}, 2000);
+
+/** "+N more" under a list cut at ROWS. @param {HTMLElement} list @param {number} more @param {string} what */
+function moreRows(list, more, what) {
+	if (more > 0) list.appendChild(el("div", "more-rows", "+" + more + " more " + what));
 }
 
 function renderPlans() {
 	const all = activePlans(m);
 	const flying = panel("flying"), holding = panel("holding");
 	flying.textContent = ""; holding.textContent = "";
+	const nFlying = all.filter((p) => p.status === "cleared").length;
+	const nHolding = all.length - nFlying;
+	// With a long line, lead with where it is: each contested path and how many wait on it.
+	if (nHolding > ROWS / 4) {
+		queues(all).slice(0, 8).forEach((q) => {
+			const r = el("div", "queue");
+			r.appendChild(el("b", "", String(q.count)));
+			r.appendChild(pathsEl(q.paths, 2));
+			r.appendChild(el("span", "dim", "next: " + q.next.map((p) => p.agent).join(", ")));
+			holding.appendChild(r);
+		});
+	}
+	let shownFlying = 0, shownHolding = 0;
 	all.forEach((p) => {
+		if (p.status === "holding" ? shownHolding++ >= ROWS : shownFlying++ >= ROWS) return;
 		const row = el("div", "plan " + p.status);
 		row.style.setProperty("--c", color(p.agent));
 		const head = el("div", "head");
@@ -308,11 +411,25 @@ function renderPlans() {
 		claims.appendChild(el("span", "k", "claims"));
 		claims.appendChild(pathsEl(p.claims.map((c) => c.path)));
 		row.appendChild(claims);
+		const h = m.hygiene[p.id];
+		if (h) {
+			// Coverage of trunk, and the broad paths this plan forced past tower's refusal.
+			const cov = el("div", "line" + (h.forced.length ? " forced" : ""));
+			cov.appendChild(el("span", "k", "covers"));
+			cov.appendChild(el("span", "", h.coverage ? coverageText(h.coverage) : "not measured"));
+			if (h.forced.length) {
+				cov.appendChild(document.createTextNode(" · forced broad claim "));
+				cov.appendChild(pathsEl(h.forced));
+				row.classList.add("forced");
+			}
+			row.appendChild(cov);
+		}
 
 		if (p.status === "holding") {
-			const w = el("div", "line");
+			const w = el("div", "line" + (behindBroad(m, p, all) ? " forced" : ""));
 			w.appendChild(el("span", "k", "⏳"));
 			w.appendChild(waitsEl(holdingOn(p, all)));
+			if (behindBroad(m, p, all)) w.appendChild(document.createTextNode(" (behind a broad claim)"));
 			row.appendChild(w);
 			holding.appendChild(row);
 			return;
@@ -339,10 +456,12 @@ function renderPlans() {
 		}
 		flying.appendChild(row);
 	});
+	moreRows(flying, nFlying - ROWS, "in flight, oldest first above");
+	moreRows(holding, nHolding - ROWS, "holding, counted per path above");
 	if (!flying.childNodes.length) empty(flying, replay ? "No agents in flight at this point of the replay." : "No agents in flight. Start a swarm or sim to see activity.");
 	if (!holding.childNodes.length) empty(holding, "Nobody waiting. Plans queue here when they claim paths another agent holds.");
-	/** @type {HTMLElement} */ ($("flying").firstElementChild).textContent = "In flight · " + all.filter((p) => p.status === "cleared").length;
-	/** @type {HTMLElement} */ ($("holding").firstElementChild).textContent = "Holding · " + all.filter((p) => p.status === "holding").length;
+	/** @type {HTMLElement} */ ($("flying").firstElementChild).textContent = "In flight · " + nFlying;
+	/** @type {HTMLElement} */ ($("holding").firstElementChild).textContent = "Holding · " + nHolding;
 }
 
 /** An agent's evidence, rendered as text only. @param {unknown} ev */
@@ -644,7 +763,7 @@ const RECENT_LANDS = 6;
 function renderOverlay() {
 	if (VIEW !== "map") return;
 	const ov = $("overlay");
-	ov.querySelectorAll(".claim, .dot, .landed").forEach((e) => { e.remove(); });
+	ov.querySelectorAll(".claim, .dot, .landed, .badge").forEach((e) => { e.remove(); });
 
 	// Recent lands stay outlined on the map, fading with age, so an idle map still shows
 	// where the work went.
@@ -666,8 +785,17 @@ function renderOverlay() {
 	});
 
 	const plans = activePlans(m);
+	const dense = plans.length > DENSE;
+	/** @type {Record<string, { r: Rect, n: number }>} holding plans per rect, when dense */
+	const waiting = {};
 	plans.forEach((p) => {
 		const c = color(p.agent);
+		if (dense && p.status === "holding") {
+			// A crowd waiting on one file is one number on it, not a pile of dashed boxes.
+			const r = p.claims.map((cl) => rectFor(cl.path)).find(Boolean);
+			if (r) (waiting[r.x + "," + r.y + "," + r.w] ??= { r, n: 0 }).n++;
+			return;
+		}
 		/** @type {Rect | null} */
 		let first = null;
 		p.claims.forEach((claim) => {
@@ -676,18 +804,25 @@ function renderOverlay() {
 			if (!first) first = r;
 			const e = el("div", "claim " + p.status);
 			e.style.cssText = box(r) + ";border-color:" + c + ";background:" + tint(c, 0.22) + ";--c:" + c;
-			// Every region names its agent, so color is never the only cue.
-			if (r.w > 22 && r.h > 14) e.appendChild(el("span", "tag", r.w > p.agent.length * 7 + 12 ? p.agent : shortName(p.agent)));
+			// Every region names its agent, so color is never the only cue (the legend does when dense).
+			if (!dense && r.w > 22 && r.h > 14) e.appendChild(el("span", "tag", r.w > p.agent.length * 7 + 12 ? p.agent : shortName(p.agent)));
 			ov.appendChild(e);
 		});
 		if (!first) return;
 		/** @type {Rect} */
 		const f = first;
-		const d = el("div", "dot " + p.status);
+		const d = el("div", "dot " + p.status + (dense ? " dense" : ""));
 		d.style.cssText = "left:" + (f.x + f.w / 2) + "px;top:" + (f.y + f.h / 2) + "px;color:" + c;
+		d.title = p.agent + ": " + firstLine(p.task);
 		d.appendChild(el("i"));
-		d.appendChild(el("span", "", p.agent + (p.status === "holding" ? " ⏳" : "")));
+		if (!dense) d.appendChild(el("span", "", p.agent + (p.status === "holding" ? " ⏳" : "")));
 		ov.appendChild(d);
+	});
+	Object.values(waiting).forEach(({ r, n }) => {
+		const b = el("div", "badge", "⏳ " + n);
+		b.title = n + " plan" + (n === 1 ? "" : "s") + " waiting here";
+		b.style.cssText = "left:" + (r.x + r.w / 2) + "px;top:" + (r.y + Math.min(r.h - 8, r.h / 2 + 14)) + "px";
+		ov.appendChild(b);
 	});
 	renderLegend(plans);
 }
@@ -699,7 +834,13 @@ function renderLegend(plans) {
 	if (!plans.length) {
 		lg.appendChild(el("div", "none", replay ? "No agents in flight at this point of the replay." : "No agents in flight. Start a swarm or sim to see activity."));
 	}
-	plans.forEach((p) => {
+	if (plans.length > DENSE) {
+		const flying = plans.filter((p) => p.status === "cleared");
+		lg.appendChild(el("div", "", flying.length + " in flight · " + (plans.length - flying.length) + " holding"));
+		queues(plans).slice(0, 5).forEach((q) => { lg.appendChild(el("div", "item dim", "⏳ " + q.count + " on " + q.paths.join(", "))); });
+		lg.appendChild(el("div", "item dim", "hover a dot for its agent"));
+	}
+	else plans.forEach((p) => {
 		const r = el("div", "item " + p.status);
 		r.appendChild(agentEl(p.agent));
 		const t = el("span", "dim", " " + (p.status === "holding" ? "⏳ " : "") + firstLine(p.task));

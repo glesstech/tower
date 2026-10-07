@@ -2,8 +2,8 @@
    Palette and base styles come from styles.css. */
 
 main.dashboard { flex: 1; min-height: 0; display: grid; gap: 10px; padding: 10px; position: relative; }
-body.view-ops main.dashboard { grid-template-rows: auto 1fr; grid-template-columns: 1fr; grid-template-areas: "head" "ops"; }
-body.view-map main.dashboard { grid-template-rows: auto 1fr 132px; grid-template-columns: 1fr; grid-template-areas: "head" "map" "time"; }
+body.view-ops main.dashboard { grid-template-rows: auto auto 1fr; grid-template-columns: 1fr; grid-template-areas: "head" "pulse" "ops"; }
+body.view-map main.dashboard { grid-template-rows: auto auto 1fr 132px; grid-template-columns: 1fr; grid-template-areas: "head" "pulse" "map" "time"; }
 body.view-ops #map, body.view-ops #timeline, body.view-map #ops { display: none; }
 
 header { grid-area: head; display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
@@ -31,6 +31,26 @@ section h2, #timeline h2, #why h2 { margin: 0 0 6px; font-size: 11px; color: var
 .none { color: #6e7681; font-size: 12px; padding: 6px 0; }
 .dim { color: var(--dim); }
 
+/* throughput strip: one small chart per measure (never two scales on one), current value in text */
+#pulse { grid-area: pulse; display: flex; gap: 10px; flex-wrap: wrap; }
+.spark { flex: 1 1 220px; display: flex; align-items: center; gap: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; min-width: 0; }
+.spark .v { min-width: 92px; }
+.spark .v b { display: block; font-size: 20px; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.spark .v span { color: var(--dim); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
+.spark .v small { display: block; color: #6e7681; font-size: 10px; font-variant-numeric: tabular-nums; }
+.spark svg { flex: 1; min-width: 80px; height: 32px; overflow: visible; }
+.spark .base { stroke: var(--line); stroke-width: 1; }
+.spark .bar { fill: var(--c); }
+.spark .trace { fill: none; stroke: var(--c); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.spark .hit { fill: transparent; }
+.spark .hit:hover { fill: rgba(255,255,255,.06); }
+
+/* queues: hundreds of holding plans as one line per contested path */
+.queue { display: flex; align-items: baseline; gap: 8px; font-size: 12px; padding: 3px 0; border-bottom: 1px solid #21262d; }
+.queue b { font-variant-numeric: tabular-nums; color: #d29922; min-width: 36px; text-align: right; }
+.queue .dim { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.more-rows { color: var(--dim); font-size: 12px; padding: 4px 0; }
+
 /* operator view */
 #ops { grid-area: ops; min-height: 0; display: grid; gap: 10px; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); grid-template-rows: minmax(0, 3fr) minmax(0, 2fr); grid-template-areas: "flying lands" "holding log"; }
 #flying { grid-area: flying; } #holding { grid-area: holding; } #lands { grid-area: lands; } #log { grid-area: log; }
@@ -43,7 +63,8 @@ section h2, #timeline h2, #why h2 { margin: 0 0 6px; font-size: 11px; color: var
 .head .time, .head .sha { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .line { font-size: 12px; color: var(--dim); margin-top: 2px; }
 .line .k { display: inline-block; min-width: 48px; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: #6e7681; }
-.line.held { color: #d29922; } .line.refused { color: var(--red); }
+.line.held { color: #d29922; } .line.refused { color: var(--red); } .line.forced { color: var(--red); }
+.plan.forced { background: rgba(248, 81, 73, .06); }
 .paths { display: inline; }
 code.path { font: 11px var(--mono); color: var(--text); background: rgba(255,255,255,.05); border-radius: 3px; padding: 0 4px; margin-right: 4px; cursor: pointer; }
 code.path:hover { background: var(--line); text-decoration: underline; }
@@ -85,6 +106,9 @@ details.ev { margin-top: 2px; font-size: 12px; } details.ev summary { cursor: po
 .dot { position: absolute; z-index: 1; transform: translate(-50%, -50%); display: flex; align-items: center; gap: 5px; transition: left .6s ease, top .6s ease; white-space: nowrap; }
 .dot i { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #0d1117; box-shadow: 0 0 0 2px currentColor, 0 0 12px currentColor; background: currentColor; animation: pulse 1.6s ease-in-out infinite; }
 .dot.holding i { background: transparent; animation: none; box-shadow: 0 0 0 2px currentColor; }
+.badge { position: absolute; z-index: 1; transform: translate(-50%, -50%); font: 700 11px ui-sans-serif, system-ui; color: #0d1117; background: #d29922; border-radius: 9px; padding: 0 6px; white-space: nowrap; }
+.dot.dense, .badge { pointer-events: auto; cursor: default; }
+.dot.dense i { width: 8px; height: 8px; animation: none; box-shadow: 0 0 0 1px currentColor; }
 .dot span { font-size: 11px; font-weight: 600; background: rgba(13,17,23,.85); padding: 1px 6px; border-radius: 4px; }
 @keyframes pulse { 50% { transform: scale(1.25); } }
 .flash { position: absolute; z-index: 2; border-radius: 3px; animation: flash 2.4s ease-out forwards; }

@@ -21,7 +21,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import type { TrunkWorkspace } from "./land";
-import { type Core, getMeta, plan as getPlan, json, setMeta, type Tree } from "./tower/core";
+import { BlobCache, type Core, getMeta, plan as getPlan, json, meter, setMeta, settle, type Tree } from "./tower/core";
 import { events, live, state } from "./tower/events";
 import { check, land, why } from "./tower/landing";
 import { expire, heartbeat, schedule, touch } from "./tower/leases";
@@ -39,6 +39,10 @@ export class Tower extends DurableObject<Env> implements Core {
 	provisioning = new Map<string, Promise<void>>();
 	treeCache: { head: string; tree: Promise<Tree> } | null = null;
 	importSpecs = new Map<string, string[]>();
+	trunkFiles: Core["trunkFiles"] = null;
+	blobs = new BlobCache();
+	trunkToken: Core["trunkToken"] = null;
+	pending = new Set<Promise<unknown>>();
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
@@ -47,11 +51,20 @@ export class Tower extends DurableObject<Env> implements Core {
 	}
 
 	async fetch(request: Request): Promise<Response> {
+		try {
+			return await this.route(request);
+		} finally {
+			await settle(this);
+		}
+	}
+
+	private async route(request: Request): Promise<Response> {
 		const url = new URL(request.url);
 		const repo = request.headers.get("X-Tower-Repo");
 		if (repo) setMeta(this, "repo", repo);
 		const parts = url.pathname.split("/").filter(Boolean);
 		const body = request.method === "POST" ? await request.json<any>().catch(() => ({})) : {};
+		meter(this);
 
 		try {
 			if (request.headers.get("Upgrade") === "websocket") return live(this, url.searchParams.get("since"));
@@ -122,6 +135,8 @@ export class Tower extends DurableObject<Env> implements Core {
 
 	// Expire cleared plans whose agents have gone silent (see src/tower/leases.ts).
 	async alarm() {
+		meter(this);
 		await expire(this);
+		await settle(this);
 	}
 }

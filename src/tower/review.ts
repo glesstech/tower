@@ -12,7 +12,7 @@
 
 import { type FileChange, importersOf, importSpecifiers, lineDelta, type Overlap, type Risk, resolveImport, SOURCE, score } from "../risk";
 import type { Change } from "../treediff";
-import { branch, type Core, json, type Plan, type PlanRow, plan as getPlan, type Review, repo, serial, toPlan } from "./core";
+import { branch, type Core, json, type Plan, type PlanRow, plan as getPlan, type Review, repo, serial, toPlan, trunkHead } from "./core";
 import { bump, emitPlan } from "./events";
 import { changes, commit, type LandBody } from "./landing";
 import { close } from "./plans";
@@ -42,8 +42,9 @@ async function inputs(t: Core, plan: Plan, changed: Change[], evidence: unknown)
 	const br = await branch(t);
 	using trunk = await t.env.ARTIFACTS.get(repo(t));
 	using fork = await t.env.ARTIFACTS.get(plan.fork!);
-	const [head] = await trunk.log({ ref: br, limit: 1 });
-	const files = await walk(trunk, (await trunk.readCommit(head.hash))!.treeHash);
+	const head = await trunkHead(t, trunk, br);
+	if (!head) throw new Error("trunk has no commits");
+	const files = await trunkFiles(t, trunk, head);
 
 	// Trunk's import graph (source files only), parsed once per blob.
 	if (t.importSpecs.size > SPEC_CACHE_LIMIT) t.importSpecs.clear();
@@ -61,15 +62,18 @@ async function inputs(t: Core, plan: Plan, changed: Change[], evidence: unknown)
 		changed.map(async (c) => {
 			const oldHash = files.get(c.path);
 			const [before, after] = await Promise.all([
-				oldHash ? text(trunk, oldHash) : null,
-				c.op === "upsert" ? text(fork, c.hash) : null,
+				oldHash ? text(t, trunk, oldHash) : null,
+				c.op === "upsert" ? text(t, fork, c.hash) : null,
 			]);
 			if (before?.text === null || after?.text === null) {
 				// Binary or huge: size it by bytes, about 40 to a line.
 				return { path: c.path, op: c.op, added: Math.ceil((after?.size ?? 0) / 40), removed: Math.ceil((before?.size ?? 0) / 40) };
 			}
 			if (after && SOURCE.test(c.path)) {
-				imports[c.path] = importSpecifiers(after.text!)
+				const specs = importSpecifiers(after.text!);
+				// Once landed this blob is on trunk; its imports are already known.
+				if (c.op === "upsert") t.importSpecs.set(c.hash, specs);
+				imports[c.path] = specs
 					.map((s) => resolveImport(c.path, s, known))
 					.filter((p): p is string => !!p && p !== c.path);
 			}
@@ -85,7 +89,7 @@ async function inputs(t: Core, plan: Plan, changed: Change[], evidence: unknown)
 	}
 	for (const p of paths) neighbors.delete(p);
 	const overlaps: Overlap[] = [];
-	if (neighbors.size && head.hash !== plan.base) {
+	if (neighbors.size && head !== plan.base) {
 		const since = await trunk.log({ ref: br, limit: SINCE_LIMIT });
 		const end = since.findIndex((c) => c.hash === plan.base);
 		for (const c of end >= 0 ? since.slice(0, end) : since) {
@@ -98,6 +102,14 @@ async function inputs(t: Core, plan: Plan, changed: Change[], evidence: unknown)
 	}
 
 	return { changes: sized, importers, overlaps, evidence };
+}
+
+// Trunk HEAD's blob paths and hashes: walked once, then carried forward by each land.
+async function trunkFiles(t: Core, trunk: ArtifactsRepo, head: string): Promise<Map<string, string>> {
+	if (t.trunkFiles?.head === head) return t.trunkFiles.files;
+	const files = await walk(trunk, (await trunk.readCommit(head))!.treeHash);
+	if (files.size < FILE_LIMIT) t.trunkFiles = { head, files };
+	return files;
 }
 
 // Every blob path on a tree, with its hash.
@@ -117,20 +129,26 @@ async function walk(repo: ArtifactsRepo, treeHash: string): Promise<Map<string, 
 async function specs(t: Core, repo: ArtifactsRepo, hash: string): Promise<string[]> {
 	let found = t.importSpecs.get(hash);
 	if (!found) {
-		const body = (await text(repo, hash))?.text;
+		const body = (await text(t, repo, hash))?.text;
 		found = body ? importSpecifiers(body) : [];
 		t.importSpecs.set(hash, found);
 	}
 	return found;
 }
 
-// A blob's text, or null text for binary files and files over TEXT_LIMIT.
-async function text(repo: ArtifactsRepo, hash: string): Promise<{ size: number; text: string | null } | null> {
-	const blob = await repo.readBlob(hash);
-	if (!blob) return null;
-	if (blob.size > TEXT_LIMIT) return { size: blob.size, text: null };
-	const bytes = new Uint8Array(await blob.arrayBuffer());
-	return { size: blob.size, text: bytes.subarray(0, 8192).includes(0) ? null : new TextDecoder().decode(bytes) };
+// A blob's text, or null text for binary files and files over TEXT_LIMIT. Read through the
+// tower's blob cache, which holds the fork's blobs once a land has prefetched them.
+async function text(t: Core, repo: ArtifactsRepo, hash: string): Promise<{ size: number; text: string | null } | null> {
+	let bytes = t.blobs.get(hash);
+	if (!bytes) {
+		const blob = await repo.readBlob(hash);
+		if (!blob) return null;
+		if (blob.size > TEXT_LIMIT) return { size: blob.size, text: null };
+		bytes = new Uint8Array(await blob.arrayBuffer());
+		t.blobs.set(hash, bytes);
+	}
+	if (bytes.byteLength > TEXT_LIMIT) return { size: bytes.byteLength, text: null };
+	return { size: bytes.byteLength, text: bytes.subarray(0, 8192).includes(0) ? null : new TextDecoder().decode(bytes) };
 }
 
 // Park a scored change in the inbox. The plan keeps its claims (nothing may land over a change

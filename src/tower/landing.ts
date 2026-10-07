@@ -1,11 +1,18 @@
 // Drift check and landing: diff a fork against its base, refuse paths outside the lease, score
 // the rest by risk, and overlay low-risk changes onto trunk (the others wait for a human).
+//
+// Lands are serialized, so the time a land holds the lock caps throughput for the whole trunk.
+// Everything that reads only the fork (the diff, the drift check, the agent's commit and the
+// changed blobs) happens before taking it. Inside it, scoring reads trunk from the tower's own
+// caches (trunk's file list moves forward with each land), the write token is reused, and
+// trunk HEAD is the one the last push left; a push rejected because trunk moved under it is
+// retried once from a fresh read.
 
 import { covers } from "../claims";
 import { type Author, TrunkWorkspace } from "../land";
 import type { Risk } from "../risk";
 import { type Change, diffTrees } from "../treediff";
-import { branch, type Core, json, type Plan, plan as getPlan, repo, serial } from "./core";
+import { branch, type Core, json, type Plan, plan as getPlan, repo, serial, trunkHead } from "./core";
 import { bump, emit } from "./events";
 import { close } from "./plans";
 import { assess, queue } from "./review";
@@ -30,50 +37,103 @@ export async function check(t: Core, id: string) {
 }
 
 // The merge gate: refuse drift, score the change, then land it (low risk) or queue it in the
-// human inbox (everything else; see review.ts).
+// human inbox (everything else; see review.ts). The fork head diffed here is what lands, even
+// if the agent pushes again meanwhile, just as an approval lands what was reviewed.
 export async function land(t: Core, id: string, body: LandBody) {
-	return serial(t, async () => {
-		const plan = getPlan(t, id);
-		if (plan.review) return json({ error: "awaiting human review", review: plan.review }, 409);
-		const { head, changes: changed, drift } = await changes(t, plan);
-		if (!changed.length) return json({ error: "nothing to land" }, 400);
-		if (drift.length) {
-			bump(t, "drift_blocked");
-			emit(t, "drift", { planId: id, agent: plan.agent, paths: drift, blocked: true });
-			return json({ error: "changes outside lease", drift, claims: plan.claims.map((c) => c.path) }, 409);
-		}
+	const plan = getPlan(t, id);
+	if (plan.review) return json({ error: "awaiting human review", review: plan.review }, 409);
+	const { head, changes: changed, drift } = await changes(t, plan);
+	if (!changed.length) return json({ error: "nothing to land" }, 400);
+	if (drift.length) {
+		bump(t, "drift_blocked");
+		emit(t, "drift", { planId: id, agent: plan.agent, paths: drift, blocked: true });
+		return json({ error: "changes outside lease", drift, claims: plan.claims.map((c) => c.path) }, 409);
+	}
+	const ready = await prepare(t, plan, head, changed);
 
-		const risk = await assess(t, plan, changed, body.evidence);
-		if (risk.level === "review") return queue(t, plan, head, changed, body, risk);
-		return json({ ...(await commit(t, plan, head, changed, body, risk)), risk });
+	return serial(t, async () => {
+		const now = getPlan(t, id);
+		// Released or expired while its diff was read: as for any plan no longer in flight.
+		if (now.status !== "cleared") return json({ error: `plan ${id} is not in flight` }, 400);
+		if (now.review) return json({ error: "awaiting human review", review: now.review }, 409);
+		const risk = await assess(t, now, changed, body.evidence);
+		if (risk.level === "review") return queue(t, now, head, changed, body, risk);
+		return json({ ...(await commit(t, now, head, changed, body, risk, ready)), risk });
 	});
+}
+
+type Prepared = { agentCommit: ArtifactsCommitMetadata; fork: Pick<ArtifactsRepo, "readBlob"> };
+
+// Read what a land needs from the fork: the agent's commit (for its message and author) and
+// every blob it changed, into the tower's blob cache. Needs no lock.
+async function prepare(t: Core, plan: Plan, head: string, changed: Change[]): Promise<Prepared> {
+	using fork = await t.env.ARTIFACTS.get(plan.fork!);
+	const [agentCommit] = await Promise.all([
+		fork.readCommit(head),
+		...changed.filter((c) => c.op === "upsert").map((c) => t.blobs.read(fork, c.hash)),
+	]);
+	if (!agentCommit) throw new Error(`commit ${head} missing in fork ${plan.fork}`);
+	// The handle above is disposed when this returns; the workspace reads the cache, and only
+	// falls back to the fork (a fresh handle) if the cache was emptied meanwhile.
+	const name = plan.fork!;
+	const fallback = async (hash: string) => {
+		using f = await t.env.ARTIFACTS.get(name);
+		return f.readBlob(hash);
+	};
+	return {
+		agentCommit,
+		fork: {
+			readBlob: async (hash: string) => {
+				const bytes = t.blobs.get(hash);
+				return bytes ? new Blob([bytes]) : fallback(hash);
+			},
+		} as Pick<ArtifactsRepo, "readBlob">,
+	};
 }
 
 export type LandBody = { summary?: string; evidence?: unknown; author?: Author };
 
 // Overlay a fork's changes onto trunk and close the plan as landed. Callers hold the serial
-// queue and have already checked drift.
-export async function commit(t: Core, plan: Plan, head: string, changed: Change[], body: LandBody, risk: Risk) {
-	using fork = await t.env.ARTIFACTS.get(plan.fork!);
+// queue and have already checked drift; `ready` is what prepare() read outside it, if anything.
+export async function commit(t: Core, plan: Plan, head: string, changed: Change[], body: LandBody, risk: Risk, ready?: Prepared) {
+	const { agentCommit, fork } = ready ?? (await prepare(t, plan, head, changed));
 	const br = await branch(t);
 	using trunk = await t.env.ARTIFACTS.get(repo(t));
-	const [[trunkHead], info, token, agentCommit] = await Promise.all([
-		trunk.log({ ref: br, limit: 1 }),
-		trunk.info(),
-		trunk.createToken("write", 300),
-		fork.readCommit(head),
-	]);
-	if (t.workspace?.branch !== br) t.workspace = new TrunkWorkspace(info.remote, br);
-	const summary = body.summary?.trim() || agentCommit!.message.split("\n")[0];
-	const sha = await t.workspace.land({
-		token: token.plaintext,
-		trunkHead: trunkHead.hash,
-		fork,
-		changes: changed,
-		author: body.author ?? agentCommit!.author,
-		message: `${summary}\n\nTower-Plan: ${plan.id}\nTower-Agent: ${plan.agent}\nTower-Fork: ${plan.fork}@${head}\n`,
-	});
-	await trunk.revokeToken(token.id);
+	if (t.workspace?.branch !== br) {
+		t.workspace = new TrunkWorkspace((await trunk.info()).remote, br);
+		t.trunkToken = null;
+	}
+	const workspace = t.workspace;
+	const summary = body.summary?.trim() || agentCommit.message.split("\n")[0];
+	const push = async () => {
+		const parent = await trunkHead(t, trunk, br);
+		if (!parent) throw new Error("trunk has no commits");
+		const sha = await workspace.land({
+			token: await writeToken(t, trunk),
+			trunkHead: parent,
+			fork,
+			changes: changed,
+			author: body.author ?? agentCommit.author,
+			message: `${summary}\n\nTower-Plan: ${plan.id}\nTower-Agent: ${plan.agent}\nTower-Fork: ${plan.fork}@${head}\n`,
+		});
+		return { parent, sha };
+	};
+	let landed: { parent: string; sha: string };
+	try {
+		landed = await push();
+	} catch (err) {
+		// Trunk moved, or the token went stale: the workspace has dropped its state, so retry
+		// once from a fresh read of trunk with a fresh token. A push that went through but
+		// reported failure left this plan's commit on top; that is the land, not a reason for
+		// a second one.
+		console.error(`land ${plan.id}: retrying once:`, err);
+		t.trunkToken = null;
+		const [top] = await trunk.log({ ref: br, limit: 1 });
+		if (top && (await trunk.readCommit(top.hash))?.message.includes(`\nTower-Plan: ${plan.id}\n`)) landed = { parent: "", sha: top.hash };
+		else landed = await push();
+	}
+	const { parent, sha } = landed;
+	advanceFiles(t, parent, sha, changed);
 
 	t.sql.exec(
 		"INSERT INTO lands (sha, plan_id, agent, task, summary, evidence, landed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -83,6 +143,32 @@ export async function commit(t: Core, plan: Plan, head: string, changed: Change[
 	bump(t, "landed");
 	await close(t, plan, "landed", { sha, summary, paths: changed.map((c) => c.path), risk });
 	return { sha, paths: changed.map((c) => c.path) };
+}
+
+// A trunk write token for the workspace's push, reused until it is within a minute of expiry.
+async function writeToken(t: Core, trunk: ArtifactsRepo): Promise<string> {
+	const held = t.trunkToken;
+	if (held && held.expiresAt - Date.now() > 60_000) return held.plaintext;
+	const token = await trunk.createToken("write", 600);
+	const expiresAt = Date.parse(token.expiresAt);
+	t.trunkToken = { id: token.id, plaintext: token.plaintext, expiresAt: Number.isFinite(expiresAt) ? expiresAt : Date.now() + 600_000 };
+	if (held) trunk.revokeToken(held.id).catch(() => {});
+	return token.plaintext;
+}
+
+// Carry trunk's cached file list forward over a land, so the next scoring needn't re-walk it.
+function advanceFiles(t: Core, parent: string, sha: string, changed: Change[]) {
+	if (t.trunkFiles?.head !== parent) {
+		t.trunkFiles = null;
+		return;
+	}
+	const files = new Map(t.trunkFiles.files);
+	for (const c of changed) {
+		// Regular files only, as review.ts walks trunk.
+		if (c.op === "upsert" && c.mode === "100644") files.set(c.path, c.hash);
+		else files.delete(c.path);
+	}
+	t.trunkFiles = { head: sha, files };
 }
 
 // Memory: why does this path look the way it does? The newest 20 lands by default; ?limit= asks

@@ -858,3 +858,51 @@ describe("review by exception", () => {
 		expect(body.expiresAt).toBeGreaterThan(Date.now() + 800_000);
 	});
 });
+
+describe("scale", () => {
+	it("a land clears the next plan in a long line without re-announcing everyone behind it", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/a.ts"]);
+		const queued = [];
+		for (const name of ["b", "c", "d", "e"]) queued.push((await t.file(name, ["src/a.ts"])).plan.id);
+		await t.push(a.plan.id, { ...SEED, "src/a.ts": "a2\n" });
+		expect((await t.call("POST", `/plans/${a.plan.id}/land`, { summary: "s" })).status).toBe(200);
+
+		expect((await t.plan(queued[0])).status).toBe("cleared");
+		for (const id of queued.slice(1)) expect((await t.plan(id)).status).toBe("holding");
+		const { events } = (await t.call("GET", "/events")).body;
+		// One holding event per queued plan (when it was filed), none after the land.
+		expect(events.filter((e: Body) => e.type === "holding").map((e: Body) => e.planId)).toEqual(queued);
+	});
+
+	it("counts calls into Artifacts in stats, without logging an event for each", async () => {
+		const t = await tower();
+		const a = await t.file("a", ["src/a.ts"]);
+		await t.plan(a.plan.id);
+		const state = (await t.call("GET", "/state")).body;
+		expect(state.stats.artifacts_calls).toBeGreaterThan(0);
+		const { events } = (await t.call("GET", "/events")).body;
+		expect(events.some((e: Body) => e.type === "stat" && e.key === "artifacts_calls")).toBe(false);
+	});
+
+	it("reuses one trunk write token across lands", async () => {
+		const t = await tower();
+		const trunk = t.artifacts.repos.get(REPO)!;
+		await runInDurableObject(t.stub, (instance: Tower) => {
+			let n = 0;
+			(instance as any).workspace = { branch: "main", land: async () => String(++n).repeat(40) };
+		});
+		let tokens = 0;
+		const create = trunk.createToken.bind(trunk);
+		trunk.createToken = async (...args: Parameters<typeof create>) => {
+			tokens++;
+			return create(...args);
+		};
+		for (const [agent, path] of [["a", "src/a.ts"], ["b", "src/b.ts"]]) {
+			const p = await t.file(agent, [path]);
+			await t.push(p.plan.id, { ...SEED, [path]: `${agent}2\n` });
+			expect((await t.call("POST", `/plans/${p.plan.id}/land`, { summary: agent })).status).toBe(200);
+		}
+		expect(tokens).toBe(1);
+	});
+});
