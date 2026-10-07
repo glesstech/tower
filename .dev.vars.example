@@ -1,3 +1,5 @@
 TOWER_API_KEY=change-me
 # Optional read-only key for the live dashboard (/repos/:repo/dashboard?key=...)
 TOWER_DASHBOARD_KEY=change-me-too
+# Your deployed dev Worker, for npm run swarm and npm run test:integration (the Worker ignores it)
+TOWER_URL=https://tower-dev.<subdomain>.workers.dev
