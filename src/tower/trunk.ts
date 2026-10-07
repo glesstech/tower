@@ -1,6 +1,7 @@
 // The trunk repo itself: creating it, read tokens for operators, teardown, the file tree, and
 // file contents.
 
+import type { Change } from "../treediff";
 import { branch, type Core, deleteRepo, repo, serial, setMeta } from "./core";
 import { reset } from "./events";
 import { schema } from "./schema";
@@ -58,6 +59,10 @@ export async function destroy(t: Core) {
 // one readTree per directory, so the result is cached until trunk HEAD moves.
 export async function tree(t: Core) {
 	const br = await branch(t);
+	// The tower is trunk's only writer: when its workspace left HEAD where the cache is, the
+	// cache is current without asking Artifacts.
+	const cached = t.treeCache;
+	if (cached && t.workspace?.branch === br && t.workspace.current === cached.head) return cached.tree;
 	using trunk = await t.env.ARTIFACTS.get(repo(t));
 	const [head] = await trunk.log({ ref: br, limit: 1 });
 	if (!head) return { head: null, paths: [], truncated: false };
@@ -95,6 +100,29 @@ export async function blob(t: Core, path: string) {
 	const binary = bytes.subarray(0, 8192).includes(0);
 	const text = binary || size > BLOB_LIMIT ? null : new TextDecoder().decode(bytes);
 	return { head: head.hash, path, hash, size, binary, text };
+}
+
+// Carry the cached file list over a land from `parent` to `sha`, so the next claim measure or
+// map load needn't walk trunk again.
+export function advanceTree(t: Core, parent: string, sha: string, changed: Change[]) {
+	const prev = t.treeCache;
+	if (prev?.head !== parent) {
+		t.treeCache = null;
+		return;
+	}
+	const tree = prev.tree.then(({ paths, truncated }) => {
+		const files = new Set(paths);
+		for (const c of changed) {
+			if (c.op === "upsert") files.add(c.path);
+			else files.delete(c.path);
+		}
+		const sorted = [...files].sort();
+		return { head: sha, paths: sorted.slice(0, TREE_LIMIT), truncated: truncated || sorted.length > TREE_LIMIT };
+	});
+	tree.catch(() => {
+		if (t.treeCache?.tree === tree) t.treeCache = null;
+	});
+	t.treeCache = { head: sha, tree };
 }
 
 async function walk(t: Core, sha: string) {
