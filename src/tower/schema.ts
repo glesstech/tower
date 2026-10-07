@@ -11,8 +11,10 @@ export function schema(sql: SqlStorage) {
 			sha TEXT PRIMARY KEY, plan_id TEXT NOT NULL, agent TEXT NOT NULL, task TEXT NOT NULL,
 			summary TEXT NOT NULL, evidence TEXT NOT NULL, landed_at INTEGER NOT NULL
 		);
+		CREATE INDEX IF NOT EXISTS lands_landed_at ON lands (landed_at);
 		CREATE TABLE IF NOT EXISTS land_paths (sha TEXT NOT NULL, path TEXT NOT NULL);
 		CREATE INDEX IF NOT EXISTS land_paths_path ON land_paths (path);
+		CREATE INDEX IF NOT EXISTS land_paths_sha ON land_paths (sha);
 		CREATE TABLE IF NOT EXISTS stats (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
 		CREATE TABLE IF NOT EXISTS events (
 			seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, type TEXT NOT NULL,

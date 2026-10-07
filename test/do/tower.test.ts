@@ -431,6 +431,22 @@ describe("dashboard", () => {
 		expect((await t.call("GET", "/why?path=src/&limit=3")).body).toHaveLength(3);
 	});
 
+	it("matches /why paths literally, so _ and case don't widen a directory", async () => {
+		const t = await tower();
+		await runInDurableObject(t.stub, (instance: Tower) => {
+			const sql = (instance as any).sql as SqlStorage;
+			["src/a_b/x.ts", "src/axb/y.ts", "SRC/a_b/z.ts", "src/a_b.ts"].forEach((path, i) => {
+				const sha = String(i).padStart(40, "0");
+				sql.exec("INSERT INTO lands VALUES (?, ?, 'a', 'task', 'summary', 'null', ?)", sha, `p${i}`, i);
+				sql.exec("INSERT INTO land_paths VALUES (?, ?)", sha, path);
+			});
+		});
+		const why = async (path: string) => ((await t.call("GET", `/why?path=${path}`)).body as unknown as { plan_id: string }[]).map((l) => l.plan_id);
+		expect(await why("src/a_b")).toEqual(["p0"]);
+		expect(await why("src/a_b.ts")).toEqual(["p3"]);
+		expect(await why("src/")).toEqual(["p3", "p1", "p0"]);
+	});
+
 	it("includes each land's paths in the state snapshot", async () => {
 		const t = await tower();
 		const a = await t.file("a", ["src/a.ts"]);

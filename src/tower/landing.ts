@@ -174,11 +174,14 @@ function advanceFiles(t: Core, parent: string, sha: string, changed: Change[]) {
 export function why(t: Core, path: string, limit?: string | null) {
 	if (!path) throw new Error("path is required");
 	const n = Math.min(Math.max(Number(limit) || 20, 1), 1000);
+	// Everything under the path as a directory: a range on the path index ("0" sorts right
+	// after "/"), which LIKE can't use and which takes "_" and "%" in a path literally.
+	const dir = path.replace(/\/?$/, "/");
 	return t.sql
 		.exec<{ sha: string; plan_id: string; agent: string; task: string; summary: string; evidence: string; landed_at: number }>(
 			`SELECT DISTINCT l.* FROM lands l JOIN land_paths p ON p.sha = l.sha
-			 WHERE p.path = ? OR p.path LIKE ? ORDER BY l.landed_at DESC LIMIT ?`,
-			path, `${path.replace(/\/?$/, "/")}%`, n,
+			 WHERE p.path = ? OR (p.path >= ? AND p.path < ?) ORDER BY l.landed_at DESC LIMIT ?`,
+			path, dir, `${dir.slice(0, -1)}0`, n,
 		)
 		.toArray()
 		.map((r) => ({ ...r, evidence: JSON.parse(r.evidence) }));
