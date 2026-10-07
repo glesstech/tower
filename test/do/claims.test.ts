@@ -142,7 +142,9 @@ describe("claim hygiene", () => {
 	it("takes per-trunk limits from meta", async () => {
 		const t = await tower();
 		await t.meta("claim_max_files", "1");
-		expect((await t.file("a", ["docs/", "web/"])).body.error).toMatch(/`web\/` covers 2 files .*the limit is 1/);
+		const refused = await t.file("a", ["docs/", "web/"]);
+		expect(refused.status).toBe(422);
+		expect(refused.body.message).toMatch(/`web\/` covers 2 files .*the limit is 1/);
 		await t.meta("claim_max_files", "1000");
 		await t.meta("claim_min_files", "1000");
 		expect((await t.file("a", ["src/"])).status).toBe(201);

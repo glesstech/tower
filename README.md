@@ -44,11 +44,11 @@ All routes are under `/repos/:repo` and require `Authorization: Bearer $TOWER_AP
 | POST | `/init` `{importUrl?}` | Create or import trunk. Returns a seeding token. |
 | POST | `/token` | A read-only trunk token (10 minutes) for fetching landed work. |
 | DELETE | `/` | Tear down a trunk: delete it and any remaining forks, and reset the Tower's state. |
-| POST | `/plans` `{agent, task, claims[], force?}` | File a flight plan. Returns `holding` (with `waiting`: why, per claim) or `cleared`, plus fork credentials if cleared, the claims' `coverage` of trunk and any `warnings`. A too-broad claim is refused with `claim_too_broad` and suggested files. |
+| POST | `/plans` `{agent, task, claims[], force?}` | File a flight plan. Returns `holding` (with `waiting`: why, per claim) or `cleared`, plus fork credentials if cleared, the claims' `coverage` of trunk and any `warnings`. A too-broad claim is refused with 422 `{error: "claim_too_broad", message, broad, suggested, coverage}`. |
 | GET | `/plans/:id` | Poll a plan. Once cleared, returns the fork remote and a fresh fork token. |
 | POST | `/plans/:id/check` | Report touched paths and drift so far. |
 | GET | `/plans/:id/diff` | Read-only: the plan (from its events) and every file it changed, with old and new contents. A landed plan is diffed on trunk (its commit against the parent); a plan in flight in its fork (base against head, each file flagged `outside` its claims or not). Answered by the Worker, so viewing a plan is never its agent's heartbeat. |
-| POST | `/plans/:id/amend` `{claims[]}` | Extend an active plan's claims. A too-broad new path is refused with 422 `claim_too_broad`. Free paths are granted at once; held paths wait (the plan keeps its fork and lease) until their holders land or release. An amendment that would close a wait cycle is refused with 409 `deadlock`. |
+| POST | `/plans/:id/amend` `{claims[], force?}` | Extend an active plan's claims. A too-broad new path is refused with 422 `claim_too_broad`. Free paths are granted at once; held paths wait (the plan keeps its fork and lease) until their holders land or release. An amendment that would close a wait cycle is refused with 409 `deadlock`. |
 | POST | `/plans/:id/land` `{summary?, evidence?}` | Merge gate: land onto trunk, or 409 with the drifted paths. |
 | POST | `/plans/:id/release` | Abandon a plan and free its airspace. |
 | GET | `/state` | Active plans, recent lands (with their paths), stats. |

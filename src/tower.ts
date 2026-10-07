@@ -20,6 +20,7 @@
 // (shared types and helpers).
 
 import { DurableObject } from "cloudflare:workers";
+import { ClaimTooBroad } from "./claims";
 import type { TrunkWorkspace } from "./land";
 import { BlobCache, type Core, getMeta, plan as getPlan, json, meter, setMeta, settle, type Tree } from "./tower/core";
 import { events, live, state } from "./tower/events";
@@ -94,6 +95,7 @@ export class Tower extends DurableObject<Env> implements Core {
 			}
 			return json({ error: "not found" }, 404);
 		} catch (err) {
+			if (err instanceof ClaimTooBroad) return json(err.body, 422);
 			if (await this.trunkMissing(err)) return json({ error: "trunk not found", repo: getMeta(this, "repo") }, 404);
 			console.error(`${request.method} ${url.pathname}:`, err);
 			return json({ error: (err as Error).message }, 400);
@@ -123,7 +125,7 @@ export class Tower extends DurableObject<Env> implements Core {
 		if (method === "GET" && parts.length === 2) return json(await status(this, id));
 		if (method === "POST" && parts[2] === "heartbeat") return json(heartbeat(this, id));
 		if (method === "POST" && parts[2] === "check") return json(await check(this, id));
-		if (method === "POST" && parts[2] === "amend") return amend(this, id, body.claims);
+		if (method === "POST" && parts[2] === "amend") return amend(this, id, body.claims, body.force === true);
 		if (method === "POST" && parts[2] === "land") return await land(this, id, body);
 		if (method === "POST" && parts[2] === "release") {
 			// A change in the inbox is the human's to decide; the swarm releases leftover plans.
