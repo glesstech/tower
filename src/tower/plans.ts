@@ -1,13 +1,25 @@
 // Flight plans: filing, clearance, fork provisioning, amendment, release, and re-clearing
 // whatever was holding once airspace frees up.
 
-import { type Claim, claimsOverlap, parseClaim } from "../claims";
+import {
+	type Claim,
+	ClaimTooBroad,
+	claimsOverlap,
+	LIMITS,
+	type Limits,
+	measure,
+	parseClaim,
+	suggest,
+	tooBroad,
+	warnings,
+} from "../claims";
 import {
 	ACTIVE,
 	type Amendment,
 	branch,
 	type Core,
 	deleteRepo,
+	getMeta,
 	json,
 	leaseTtl,
 	type Plan,
@@ -20,13 +32,18 @@ import {
 	toPlan,
 } from "./core";
 import { bump, emitPlan } from "./events";
+import { tree } from "./trunk";
 
 const TOKEN_TTL = 3600;
 
-export async function file(t: Core, body: { agent?: string; task?: string; claims?: string[]; ttl?: number }) {
+export async function file(t: Core, body: { agent?: string; task?: string; claims?: string[]; ttl?: number; force?: boolean }) {
 	if (!body.agent || !body.task || !body.claims?.length) throw new Error("agent, task and claims are required");
 	const claims = body.claims.map(parseClaim);
 	const ttl = leaseTtl(body.ttl);
+	// Measured before anything is read or written below: nothing awaits between the blocker
+	// check and the insert, so plans filed meanwhile still queue in order.
+	const files = await trunkFiles(t);
+	const hygiene = vet(t, files, claims, body.task, !!body.force);
 	const id = crypto.randomUUID().slice(0, 8);
 	const now = Date.now();
 	const blockedBy = blockers(t, claims, now);
@@ -36,9 +53,91 @@ export async function file(t: Core, body: { agent?: string; task?: string; claim
 		id, body.agent, body.task, JSON.stringify(claims), next, JSON.stringify(blockedBy), now, now, ttl,
 	);
 	if (blockedBy.length) bump(t, "conflicts_prevented");
-	emitPlan(t, "filed", id);
+	if (hygiene.forced) bump(t, "claims_forced");
+	// A plan waiting on a claim tower would have refused: what broad claims cost everyone else.
+	if (files && blockedBy.some((b) => broad(t, files, getPlan(t, b).claims).length)) bump(t, "blocked_by_broad");
+	emitPlan(t, "filed", id, hygiene.data);
 	emitPlan(t, next, id, next === "holding" ? { blockedBy } : {});
-	return status(t, id);
+	return { ...(await status(t, id)), ...hygiene.data };
+}
+
+// Trunk's file list (cached until HEAD moves), or null if it can't be read: measuring is
+// advice, so it never stands between an agent and its plan.
+async function trunkFiles(t: Core): Promise<{ paths: string[]; truncated: boolean } | null> {
+	try {
+		const { paths, truncated } = await tree(t);
+		return paths.length ? { paths, truncated } : null;
+	} catch (err) {
+		console.error("claim hygiene: trunk tree unavailable:", err);
+		return null;
+	}
+}
+
+// Per-trunk limits, from meta: claim_max_files, claim_max_share (0..1), claim_min_files.
+function limits(t: Core): Limits {
+	const n = (key: string, fallback: number) => {
+		const v = Number(getMeta(t, key));
+		return getMeta(t, key) !== null && Number.isFinite(v) ? v : fallback;
+	};
+	return {
+		maxFiles: n("claim_max_files", LIMITS.maxFiles),
+		maxShare: n("claim_max_share", LIMITS.maxShare),
+		minFiles: n("claim_min_files", LIMITS.minFiles),
+	};
+}
+
+function broad(t: Core, files: { paths: string[] }, claims: Claim[]) {
+	const lim = limits(t);
+	return measure(claims, files.paths).claims.flatMap((c) => {
+		const reason = tooBroad(c, lim);
+		return reason ? [{ ...c, reason }] : [];
+	});
+}
+
+// Measure claims against trunk: refuse broad ones (ClaimTooBroad, with files under them that
+// fit the task) unless forced, and flag guessed paths. A truncated tree undercounts, so it
+// can still refuse but doesn't warn about paths it may simply not have listed.
+function vet(t: Core, files: { paths: string[]; truncated: boolean } | null, claims: Claim[], task: string, force: boolean) {
+	if (!files) return { forced: false, data: {} };
+	const coverage = measure(claims, files.paths);
+	const wide = broad(t, files, claims);
+	if (wide.length && !force) {
+		bump(t, "claims_refused");
+		const within = wide.map((w) => parseClaim(w.path));
+		const suggested = suggest(task, files.paths, history(t), { within, limit: 8 }).map((s) => s.path);
+		throw new ClaimTooBroad(wide, suggested, coverage);
+	}
+	const warned = files.truncated ? [] : warnings(claims, files.paths);
+	const data: Record<string, unknown> = { coverage };
+	if (warned.length) data.warnings = warned;
+	if (wide.length) data.forced = wide.map((w) => w.path);
+	return { forced: wide.length > 0, data };
+}
+
+// Recent lands, newest first, with the paths each changed: what suggestions learn from.
+function history(t: Core, limit = 200): { task: string; paths: string[] }[] {
+	const lands = t.sql.exec<{ sha: string; task: string }>("SELECT sha, task FROM lands ORDER BY landed_at DESC LIMIT ?", limit).toArray();
+	return lands.map((l) => ({
+		task: l.task,
+		paths: t.sql.exec<{ path: string }>("SELECT path FROM land_paths WHERE sha = ?", l.sha).toArray().map((r) => r.path),
+	}));
+}
+
+// Why a holding plan waits, per overlapping claim, phrased so the agent can act on it:
+// narrow its own claim when that is what overlaps, or wait for the holder.
+function waiting(t: Core, plan: Plan) {
+	return plan.blockedBy.flatMap((b) => {
+		const other = getPlan(t, b);
+		const who = `${other.agent} (${other.status === "cleared" ? "in flight" : "queued ahead of you"})`;
+		return other.claims.flatMap((theirs) =>
+			plan.claims.filter((mine) => claimsOverlap(mine, theirs)).map((mine) => {
+				const reason = mine.dir && mine.path !== theirs.path && theirs.path.startsWith(mine.path)
+					? `\`${theirs.path}\` is held by ${who}, and your claim \`${mine.path}\` covers it; narrow \`${mine.path}\` to the files you will change to start now`
+					: `\`${theirs.path}\` is held by ${who} for "${other.task.split("\n")[0]}", and covers your \`${mine.path}\`; you start when they land or release, or sooner if you drop \`${mine.path}\` and refile`;
+				return { planId: other.id, agent: other.agent, held: theirs.path, yours: mine.path, reason };
+			}),
+		);
+	});
 }
 
 // Active plans this claim set overlaps: every cleared plan, plus holding plans filed earlier
@@ -57,6 +156,7 @@ function blockers(t: Core, claims: Claim[], before: number, self?: string): stri
 // provision still returns the plan, so the agent keeps its id and the next poll retries.
 export async function status(t: Core, id: string) {
 	const plan = getPlan(t, id);
+	if (plan.status === "holding") return { plan, waiting: waiting(t, plan) };
 	if (plan.status !== "cleared") return { plan };
 	if (!plan.fork) {
 		try {
@@ -112,12 +212,34 @@ async function forkFor(t: Core, plan: Plan) {
 // fork and lease while the amendment waits; close() grants it once the blockers land or release.
 // Only cleared plans block an amendment: holding plans hold nothing yet, and an in-flight agent
 // going ahead of them is what keeps it from waiting on a plan that waits on it.
-export function amend(t: Core, id: string, raw?: string[]): Response {
+// New paths are measured like a filing's (coverage and warnings come back with the answer); a
+// broad one is refused with 422 claim_too_broad unless forced.
+export async function amend(t: Core, id: string, raw?: string[], force = false): Promise<Response> {
 	if (!raw?.length) throw new Error("claims are required");
+	const requested = raw.map(parseClaim);
+	const before = getPlan(t, id);
+	if (before.status !== "cleared" && before.status !== "holding") throw new Error(`plan ${id} is ${before.status}`);
+	const fresh = requested.filter((c) => !within(before.claims, c));
+	let hygiene: ReturnType<typeof vet> = { forced: false, data: {} };
+	if (fresh.length) {
+		try {
+			hygiene = vet(t, await trunkFiles(t), fresh, before.task, force);
+		} catch (err) {
+			if (err instanceof ClaimTooBroad) return json({ granted: false, ...err.body }, 422);
+			throw err;
+		}
+	}
+	if (hygiene.forced) bump(t, "claims_forced");
+	return amendNow(t, id, requested, hygiene.data);
+}
+
+// Everything after measuring runs without awaiting, so blockers can't change under it.
+function amendNow(t: Core, id: string, requested: Claim[], extra: Record<string, unknown>): Response {
+	const reply = (body: Record<string, unknown>, status?: number) => json({ ...body, ...extra }, status);
 	const plan = getPlan(t, id);
 	if (plan.status !== "cleared" && plan.status !== "holding") throw new Error(`plan ${id} is ${plan.status}`);
-	const added = merge([], raw.map(parseClaim)).filter((c) => !within(plan.claims, c));
-	if (!added.length) return json({ granted: true, blockedBy: [], plan });
+	const added = merge([], requested).filter((c) => !within(plan.claims, c));
+	if (!added.length) return reply({ granted: true, blockedBy: [], plan });
 
 	if (plan.status === "holding") {
 		const claims = [...plan.claims, ...added];
@@ -129,13 +251,13 @@ export function amend(t: Core, id: string, raw?: string[]): Response {
 		);
 		emitPlan(t, "amended", id, { added: added.map((c) => c.path) });
 		emitPlan(t, status, id, status === "holding" ? { blockedBy } : {});
-		return json({ granted: true, blockedBy, plan: getPlan(t, id) });
+		return reply({ granted: true, blockedBy, plan: getPlan(t, id) });
 	}
 
 	if (!blockers(t, added, 0, id).length) {
 		t.sql.exec("UPDATE plans SET claims = ? WHERE id = ?", JSON.stringify([...plan.claims, ...added]), id);
 		emitPlan(t, "amended", id, { added: added.map((c) => c.path) });
-		return json({ granted: true, blockedBy: [], plan: getPlan(t, id) });
+		return reply({ granted: true, blockedBy: [], plan: getPlan(t, id) });
 	}
 
 	// Held: fold into any amendment already waiting, then make sure waiting on these blockers
@@ -148,7 +270,7 @@ export function amend(t: Core, id: string, raw?: string[]): Response {
 		bump(t, "deadlocks_prevented");
 		emitPlan(t, "deadlock", id, { paths: added.map((c) => c.path), blockedBy, cycle: found });
 		const error = `deadlock: ${found.join(" -> ")}; finish without these paths, or land or release first`;
-		return json({ granted: false, error, deadlock: found, blockedBy, plan }, 409);
+		return reply({ granted: false, error, deadlock: found, blockedBy, plan }, 409);
 	}
 	const amendment: Amendment = { claims, blockedBy, requestedAt: plan.amendment?.requestedAt ?? Date.now() };
 	t.sql.exec("UPDATE plans SET amendment = ? WHERE id = ?", JSON.stringify(amendment), id);
@@ -157,7 +279,7 @@ export function amend(t: Core, id: string, raw?: string[]): Response {
 		bump(t, "amendments_held");
 		emitPlan(t, "amendment_held", id, { paths: claims.map((c) => c.path), blockedBy });
 	}
-	return json({ granted: false, held: true, blockedBy, plan: getPlan(t, id) });
+	return reply({ granted: false, held: true, blockedBy, plan: getPlan(t, id) });
 }
 
 // The wait-for path from `self` through held amendments back to `self`, if there is one.

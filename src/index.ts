@@ -5,6 +5,9 @@
 // assets from web/ with no data of its own, so they are served without a key; they call the
 // API with the ?key= from their own URL (see src/dashboard/pages.ts).
 //
+// GET /repos/:repo/plans/:id/diff is answered here rather than by the Tower, so viewing a plan
+// never counts as its agent's heartbeat (see src/tower/diff.ts).
+//
 // The home page at / is web/index.html, served by the assets layer before this Worker runs.
 // It reads GET /repos: every trunk with counts for the operator key, else only the public
 // demo trunk (TOWER_DEMO_REPO), whose read-only routes need no key at all (see src/home.ts).
@@ -14,6 +17,7 @@ import { access } from "./dashboard/access";
 import { pageAsset } from "./dashboard/pages";
 import { demoAccess, home } from "./home";
 import { createServer } from "./mcp";
+import { planDiff } from "./tower/diff";
 
 export { Tower } from "./tower";
 
@@ -30,7 +34,8 @@ export default {
 
 		const [, repo, rest = "/"] = match;
 		const websocket = request.headers.get("Upgrade") === "websocket";
-		const page = pageAsset({ method: request.method, rest, websocket });
+		const html = request.headers.get("Accept")?.includes("text/html") ?? false;
+		const page = pageAsset({ method: request.method, rest, websocket, html });
 		if (page) {
 			const asset = await env.ASSETS.fetch(new Request(new URL(page, url.origin), request));
 			if (asset.status !== 404) return asset;
@@ -44,6 +49,16 @@ export default {
 
 		if (rest === "/mcp") {
 			return createMcpHandler(() => createServer(env, repo), { route: url.pathname })(request, env, ctx);
+		}
+		const diff = request.method === "GET" && rest.match(/^\/plans\/([^/]+)\/diff$/);
+		if (diff) {
+			try {
+				const result = await planDiff(env, repo, decodeURIComponent(diff[1]));
+				return result ? Response.json(result) : Response.json({ error: "no such plan" }, { status: 404 });
+			} catch (err) {
+				console.error(`GET ${url.pathname}:`, err);
+				return Response.json({ error: (err as Error).message }, { status: 400 });
+			}
 		}
 		const forward = new Request(new URL(rest + url.search, url.origin), request);
 		forward.headers.set("X-Tower-Repo", repo);

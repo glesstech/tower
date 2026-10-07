@@ -2,11 +2,24 @@
 // small helpers for meta, trunk lookup and cleanup.
 
 import type { Claim } from "../claims";
-import type { TrunkWorkspace } from "../land";
+import type { Author, TrunkWorkspace } from "../land";
+import type { Risk } from "../risk";
 
 export type Status = "holding" | "cleared" | "landed" | "released" | "expired";
 
 export type Amendment = { claims: Claim[]; blockedBy: string[]; requestedAt: number };
+
+// A land waiting in the human inbox: the fork head that was scored, and the land request to
+// replay if a human approves it (see review.ts).
+export type Review = {
+	head: string;
+	summary?: string;
+	evidence?: unknown;
+	author?: Author;
+	risk: Risk;
+	paths: string[];
+	requestedAt: number;
+};
 
 export type Plan = {
 	id: string;
@@ -16,6 +29,7 @@ export type Plan = {
 	status: Status;
 	blockedBy: string[];
 	amendment: Amendment | null;
+	review: Review | null;
 	fork: string | null;
 	base: string | null;
 	createdAt: number;
@@ -31,6 +45,7 @@ export type PlanRow = {
 	status: Status;
 	blocked_by: string;
 	amendment: string | null;
+	review: string | null;
 	fork: string | null;
 	base: string | null;
 	created_at: number;
@@ -50,6 +65,8 @@ export interface Core {
 	workspace: TrunkWorkspace | null;
 	provisioning: Map<string, Promise<void>>;
 	treeCache: { head: string; tree: Promise<Tree> } | null;
+	// Relative import specifiers per source blob hash, for blast radius (see review.ts).
+	importSpecs: Map<string, string[]>;
 }
 
 export const ACTIVE = "('holding', 'cleared')";
@@ -90,6 +107,7 @@ export function toPlan(r: PlanRow): Plan {
 		status: r.status,
 		blockedBy: JSON.parse(r.blocked_by),
 		amendment: r.amendment ? JSON.parse(r.amendment) : null,
+		review: r.review ? JSON.parse(r.review) : null,
 		fork: r.fork,
 		base: r.base,
 		createdAt: r.created_at,

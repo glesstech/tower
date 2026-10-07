@@ -21,7 +21,7 @@ export function schema(sql: SqlStorage) {
 		CREATE INDEX IF NOT EXISTS events_plan ON events (plan_id, seq);
 	`);
 	// Added after plans existed; each fails harmlessly once its column is there.
-	for (const column of ["amendment TEXT", "last_seen_at INTEGER", "ttl INTEGER"]) {
+	for (const column of ["amendment TEXT", "last_seen_at INTEGER", "ttl INTEGER", "review TEXT"]) {
 		try {
 			sql.exec(`ALTER TABLE plans ADD COLUMN ${column}`);
 		} catch {}

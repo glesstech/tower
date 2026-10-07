@@ -1,14 +1,16 @@
-// Drift check and landing: diff a fork against its base, refuse paths outside the lease, and
-// overlay the rest onto trunk.
+// Drift check and landing: diff a fork against its base, refuse paths outside the lease, score
+// the rest by risk, and overlay low-risk changes onto trunk (the others wait for a human).
 
 import { covers } from "../claims";
 import { type Author, TrunkWorkspace } from "../land";
+import type { Risk } from "../risk";
 import { type Change, diffTrees } from "../treediff";
 import { branch, type Core, json, type Plan, plan as getPlan, repo, serial } from "./core";
 import { bump, emit } from "./events";
 import { close } from "./plans";
+import { assess, queue } from "./review";
 
-async function changes(t: Core, plan: Plan): Promise<{ head: string; changes: Change[]; drift: string[] }> {
+export async function changes(t: Core, plan: Plan): Promise<{ head: string; changes: Change[]; drift: string[] }> {
 	if (plan.status !== "cleared" || !plan.fork || !plan.base) throw new Error(`plan ${plan.id} is not in flight`);
 	const br = await branch(t);
 	using fork = await t.env.ARTIFACTS.get(plan.fork);
@@ -27,9 +29,12 @@ export async function check(t: Core, id: string) {
 	return { head, touched: touched.map((c) => c.path), drift };
 }
 
-export async function land(t: Core, id: string, body: { summary?: string; evidence?: unknown; author?: Author }) {
+// The merge gate: refuse drift, score the change, then land it (low risk) or queue it in the
+// human inbox (everything else; see review.ts).
+export async function land(t: Core, id: string, body: LandBody) {
 	return serial(t, async () => {
 		const plan = getPlan(t, id);
+		if (plan.review) return json({ error: "awaiting human review", review: plan.review }, 409);
 		const { head, changes: changed, drift } = await changes(t, plan);
 		if (!changed.length) return json({ error: "nothing to land" }, 400);
 		if (drift.length) {
@@ -38,36 +43,46 @@ export async function land(t: Core, id: string, body: { summary?: string; eviden
 			return json({ error: "changes outside lease", drift, claims: plan.claims.map((c) => c.path) }, 409);
 		}
 
-		using fork = await t.env.ARTIFACTS.get(plan.fork!);
-		const br = await branch(t);
-		using trunk = await t.env.ARTIFACTS.get(repo(t));
-		const [[trunkHead], info, token, agentCommit] = await Promise.all([
-			trunk.log({ ref: br, limit: 1 }),
-			trunk.info(),
-			trunk.createToken("write", 300),
-			fork.readCommit(head),
-		]);
-		if (t.workspace?.branch !== br) t.workspace = new TrunkWorkspace(info.remote, br);
-		const summary = body.summary?.trim() || agentCommit!.message.split("\n")[0];
-		const sha = await t.workspace.land({
-			token: token.plaintext,
-			trunkHead: trunkHead.hash,
-			fork,
-			changes: changed,
-			author: body.author ?? agentCommit!.author,
-			message: `${summary}\n\nTower-Plan: ${plan.id}\nTower-Agent: ${plan.agent}\nTower-Fork: ${plan.fork}@${head}\n`,
-		});
-		await trunk.revokeToken(token.id);
-
-		t.sql.exec(
-			"INSERT INTO lands (sha, plan_id, agent, task, summary, evidence, landed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-			sha, plan.id, plan.agent, plan.task, summary, JSON.stringify(body.evidence ?? null), Date.now(),
-		);
-		for (const c of changed) t.sql.exec("INSERT INTO land_paths (sha, path) VALUES (?, ?)", sha, c.path);
-		bump(t, "landed");
-		await close(t, plan, "landed", { sha, summary, paths: changed.map((c) => c.path) });
-		return json({ sha, paths: changed.map((c) => c.path) });
+		const risk = await assess(t, plan, changed, body.evidence);
+		if (risk.level === "review") return queue(t, plan, head, changed, body, risk);
+		return json({ ...(await commit(t, plan, head, changed, body, risk)), risk });
 	});
+}
+
+export type LandBody = { summary?: string; evidence?: unknown; author?: Author };
+
+// Overlay a fork's changes onto trunk and close the plan as landed. Callers hold the serial
+// queue and have already checked drift.
+export async function commit(t: Core, plan: Plan, head: string, changed: Change[], body: LandBody, risk: Risk) {
+	using fork = await t.env.ARTIFACTS.get(plan.fork!);
+	const br = await branch(t);
+	using trunk = await t.env.ARTIFACTS.get(repo(t));
+	const [[trunkHead], info, token, agentCommit] = await Promise.all([
+		trunk.log({ ref: br, limit: 1 }),
+		trunk.info(),
+		trunk.createToken("write", 300),
+		fork.readCommit(head),
+	]);
+	if (t.workspace?.branch !== br) t.workspace = new TrunkWorkspace(info.remote, br);
+	const summary = body.summary?.trim() || agentCommit!.message.split("\n")[0];
+	const sha = await t.workspace.land({
+		token: token.plaintext,
+		trunkHead: trunkHead.hash,
+		fork,
+		changes: changed,
+		author: body.author ?? agentCommit!.author,
+		message: `${summary}\n\nTower-Plan: ${plan.id}\nTower-Agent: ${plan.agent}\nTower-Fork: ${plan.fork}@${head}\n`,
+	});
+	await trunk.revokeToken(token.id);
+
+	t.sql.exec(
+		"INSERT INTO lands (sha, plan_id, agent, task, summary, evidence, landed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		sha, plan.id, plan.agent, plan.task, summary, JSON.stringify(body.evidence ?? null), Date.now(),
+	);
+	for (const c of changed) t.sql.exec("INSERT INTO land_paths (sha, path) VALUES (?, ?)", sha, c.path);
+	bump(t, "landed");
+	await close(t, plan, "landed", { sha, summary, paths: changed.map((c) => c.path), risk });
+	return { sha, paths: changed.map((c) => c.path) };
 }
 
 // Memory: why does this path look the way it does? The newest 20 lands by default; ?limit= asks
