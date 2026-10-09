@@ -20,6 +20,7 @@ describe("access", () => {
 		expect(access(keys, "view", get("/blob"))).toBe("dashboard");
 		expect(access(keys, "view", get("/why"))).toBe("dashboard");
 		expect(access(keys, "view", get("/plans/abc/diff"))).toBe("dashboard");
+		expect(access(keys, "view", get("/inbox"))).toBe("dashboard");
 	});
 
 	it("keeps the dashboard key away from everything else", () => {
@@ -28,6 +29,7 @@ describe("access", () => {
 		expect(access(keys, "view", { method: "POST", rest: "/init", websocket: false })).toBeNull();
 		expect(access(keys, "view", { method: "DELETE", rest: "/", websocket: false })).toBeNull();
 		expect(access(keys, "view", get("/mcp"))).toBeNull();
+		expect(access(keys, "view", { method: "POST", rest: "/inbox/decide", websocket: false })).toBeNull();
 		expect(access(keys, "view", { method: "POST", rest: "/blob", websocket: false })).toBeNull();
 		expect(access(keys, "view", get("/blob", true))).toBeNull();
 		// Polling a plan mints a fork token; only its diff is read-only.
@@ -57,7 +59,7 @@ describe("pageAsset", () => {
 	});
 
 	it("never shadows the API", () => {
-		for (const rest of ["/state", "/events", "/tree", "/blob", "/why", "/live", "/mcp"]) expect(pageAsset(get(rest))).toBeNull();
+		for (const rest of ["/state", "/events", "/tree", "/blob", "/why", "/live", "/mcp", "/inbox"]) expect(pageAsset(get(rest))).toBeNull();
 		expect(pageAsset(get("/dashboard", true))).toBeNull();
 		expect(pageAsset({ method: "POST", rest: "/plans", websocket: false })).toBeNull();
 		expect(pageAsset({ method: "DELETE", rest: "/", websocket: false })).toBeNull();
@@ -72,6 +74,12 @@ describe("pageAsset", () => {
 		expect(pageAsset(get("/plans/abc123"))).toBeNull();
 		expect(pageAsset({ ...get("/plans/abc/diff"), html: true })).toBeNull();
 		expect(pageAsset({ method: "POST", rest: "/plans/abc", websocket: false, html: true })).toBeNull();
+	});
+
+	it("serves the inbox page at /inbox only to a browser asking for HTML", () => {
+		expect(pageAsset({ ...get("/inbox"), html: true })).toBe("/inbox");
+		expect(pageAsset({ ...get("/inbox"), html: false })).toBeNull();
+		expect(pageAsset({ method: "POST", rest: "/inbox/decide", websocket: false, html: true })).toBeNull();
 	});
 
 	it("only maps plain page names", () => {

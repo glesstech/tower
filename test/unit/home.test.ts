@@ -32,6 +32,7 @@ describe("demoAccess", () => {
 		// The code explorer reads trunk files and land history; /state already shows the lands.
 		expect(demoAccess("demo", "demo", get("/blob"))).toBe(true);
 		expect(demoAccess("demo", "demo", get("/why"))).toBe(true);
+		expect(demoAccess("demo", "demo", get("/inbox"))).toBe(true);
 	});
 
 	it("keeps everything else on the demo trunk behind the key", () => {
@@ -39,6 +40,7 @@ describe("demoAccess", () => {
 		expect(demoAccess("demo", "demo", get("/plans/abc"))).toBe(false);
 		expect(demoAccess("demo", "demo", { method: "POST", rest: "/plans", websocket: false })).toBe(false);
 		expect(demoAccess("demo", "demo", { method: "POST", rest: "/token", websocket: false })).toBe(false);
+		expect(demoAccess("demo", "demo", { method: "POST", rest: "/inbox/decide", websocket: false })).toBe(false);
 		expect(demoAccess("demo", "demo", { method: "DELETE", rest: "/", websocket: false })).toBe(false);
 	});
 
