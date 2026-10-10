@@ -12,6 +12,9 @@
 // pushes it, opens a GitHub PR with each agent's evidence and the combined check results, then
 // tears the trunk down so the next run starts from main. --checks "<cmd>" replaces the npm
 // typecheck/test default, for repos that don't use npm (e.g. --checks "go test ./...").
+// Agents run on their CLI's own default model, so real work gets the model you normally use.
+// --cheap picks each agent's cheap model from agents.json, for test and demo runs. --model sonnet
+// sets the model for every agent, --model claude=opus,opencode=… per agent; it wins over --cheap.
 // --timeout (minutes, default 30) counts from when tower first clears the agent's plan, so time
 // spent holding behind other agents doesn't eat into it; an agent never cleared stops at 3x.
 
@@ -35,6 +38,8 @@ const { values: args } = parseArgs({
 		init: { type: "boolean", default: false },
 		pr: { type: "boolean", default: false },
 		checks: { type: "string" },
+		model: { type: "string" },
+		cheap: { type: "boolean", default: false },
 		"dry-run": { type: "boolean", default: false },
 	},
 });
@@ -96,6 +101,9 @@ async function init() {
 	log("swarm", `created trunk ${args.repo} from this directory's HEAD`);
 }
 
+// The agent's argv: cmd filled in, with its "{modelArgs}" element expanded only when a model is chosen.
+const argv = (agent, vars) => agent.cmd.flatMap((part) => (part === "{modelArgs}" ? (agent.model ? fill(agent.modelArgs, { ...vars, model: agent.model }) : []) : [fill(part, vars)]));
+
 function launch(agent, name, task, logDir, clock) {
 	return new Promise(async (done) => {
 		const dir = await mkdtemp(join(tmpdir(), `swarm-${name}-`));
@@ -103,10 +111,10 @@ function launch(agent, name, task, logDir, clock) {
 		for (const [file, content] of Object.entries(agent.files ?? {})) {
 			await writeFile(join(dir, file), JSON.stringify(fill(content, vars), null, 2));
 		}
-		const [cmd, ...argv] = fill(agent.cmd, vars);
+		const [cmd, ...rest] = argv(agent, vars);
 		const out = createWriteStream(join(logDir, `${name}.log`));
 		// Its own process group, so a timeout stops the agent's children (npm, tests) too.
-		const child = spawn(cmd, argv, { cwd: dir, stdio: ["ignore", "pipe", "pipe"], detached: true });
+		const child = spawn(cmd, rest, { cwd: dir, stdio: ["ignore", "pipe", "pipe"], detached: true });
 		const kill = () => {
 			try {
 				process.kill(-child.pid, "SIGTERM");
@@ -165,7 +173,14 @@ async function choosePool(agents) {
 
 const { agents } = JSON.parse(await readFile(resolve(args.config), "utf8"));
 const { pool, how } = await choosePool(agents);
-log("swarm", `agents: ${pool.map((a) => a.name).join(", ")} (${how})`);
+if (args.cheap) for (const a of pool) a.model = a.cheap;
+for (const spec of (args.model ?? "").split(",").map((s) => s.trim()).filter(Boolean)) {
+	const [name, model] = spec.includes("=") ? spec.split("=") : [null, spec];
+	const targets = name ? pool.filter((a) => a.name === name) : pool;
+	if (!targets.length) throw new Error(`--model ${spec}: no agent named ${name} in this run`);
+	for (const a of targets) a.model = model;
+}
+log("swarm", `agents: ${pool.map((a) => `${a.name} (${a.model ?? "default model"})`).join(", ")} (${how})`);
 
 const work = (await tasks()).map((task, i) => {
 	const agent = pool[i % pool.length];
@@ -173,7 +188,7 @@ const work = (await tasks()).map((task, i) => {
 });
 
 if (args["dry-run"]) {
-	for (const w of work) console.log(`${w.name}: ${fill(w.agent.cmd, { prompt: "<prompt>", mcp_url: `${REPO_URL}/mcp`, auth: "Bearer ***" }).join(" ")}\n  task: ${w.task.text.split("\n")[0]}`);
+	for (const w of work) console.log(`${w.name}: ${argv(w.agent, { prompt: "<prompt>", mcp_url: `${REPO_URL}/mcp`, auth: "Bearer ***" }).join(" ")}\n  task: ${w.task.text.split("\n")[0]}`);
 	process.exit(0);
 }
 

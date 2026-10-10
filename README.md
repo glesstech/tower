@@ -129,6 +129,7 @@ TOWER_URL=https://tower-dev.<subdomain>.workers.dev TOWER_API_KEY=... \
 - `--init` creates the trunk from the current directory's HEAD.
 - `--pr` fetches what landed into a `swarm/<timestamp>` branch and runs the `typecheck` and `test` npm scripts on the combined result. Each agent checks only its own change, so this is where a clash between disjoint claims shows up. `--checks "<cmd>"` replaces the npm scripts. The swarm then pushes the branch, opens a GitHub PR with each agent's evidence, the check results and `Closes #N` for landed issues, and tears the trunk down, so the next run starts fresh from `main`.
 - `--timeout` (minutes, default 30) counts from when tower first clears the agent's plan, so time spent waiting in line doesn't count. An agent that is never cleared stops at three times the timeout. While an agent runs, the swarm sends heartbeats for its plans.
+- Agents run on their CLI's own default model. `--cheap` picks each agent's `cheap` model from `swarm/agents.json` (Haiku for Claude Code, Gemini Flash for opencode), for test and demo runs. `--model sonnet` sets the model for every agent, and `--model claude=opus,opencode=<model>` sets it per agent. `--model` wins over `--cheap`.
 - `--dry-run` prints the agent commands without running anything. Logs go to `swarm-logs/`.
 
 `AGENTS.md` tells agents that work in this repo to send multi-issue requests to the swarm.
