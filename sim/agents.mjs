@@ -46,6 +46,7 @@ const { values: args } = parseArgs({
 		review: { type: "string", default: "0" },
 		zipf: { type: "string", default: "1" },
 		stagger: { type: "string", default: "0" },
+		think: { type: "string", default: "0" },
 		git: { type: "string", default: "24" },
 		poll: { type: "string", default: "1500" },
 		rng: { type: "string", default: "28" },
@@ -69,6 +70,9 @@ const REVIEW = Number(args.review);
 if (!(REVIEW >= 0 && REVIEW <= AGENTS)) throw new Error("--review must be between 0 and --agents");
 const ZIPF = Number(args.zipf);
 const STAGGER = Number(args.stagger) * 1000;
+// Seconds an agent spends on its edit after cloning. Real agents take minutes, which is what lets
+// uncoordinated agents collide; local git alone is too fast to overlap.
+const THINK = Number(args.think) * 1000;
 const POLL = Number(args.poll);
 // A cleared plan should get its fork within this long; holding has no deadline (the queue
 // in front of a hot module can be long).
@@ -274,6 +278,7 @@ async function fly({ name, id, mod, file, drifts, review, body, work }) {
 	const commit = (msg) =>
 		run("git", ["-c", `user.name=${name}`, "-c", `user.email=${name}@tower.local`, "commit", "-qam", msg], { cwd: dir });
 
+	if (THINK) await sleep(jitter(THINK));
 	await appendFile(join(dir, file), review ? review.line(name) : `${mod}.push(${JSON.stringify(name)});\n`);
 	// Without --seed a review file may be new; commit -a only stages tracked files.
 	if (review) await run("git", ["add", file], { cwd: dir });
@@ -431,6 +436,7 @@ async function plainAgent(i, m, remote, work) {
 	await git(work, null, "clone", "-q", remote, dir);
 	const sh = (...cmd) => run("git", ["-c", `user.name=${name}`, "-c", `user.email=${name}@tower.local`, ...cmd], { cwd: dir });
 	const edit = async () => {
+		if (THINK) await sleep(jitter(THINK));
 		await appendFile(join(dir, file), `m${m}.push(${JSON.stringify(name)});\n`);
 		await sh("commit", "-qam", `${name}: extend ${file}`);
 	};
@@ -541,7 +547,7 @@ async function towerRun(work) {
 	report.failed = failed;
 	if (llm) {
 		// The swarm exits 0 whether or not its agents landed, so count their lands too.
-		report.llmLanded = `${new Set(state.lands.filter((l) => l.agent.startsWith("claude-")).map((l) => l.agent)).size}/${args.llm.length}`;
+		report.llmLanded = `${new Set(events.filter((e) => e.type === "landed" && e.agent?.startsWith("claude-")).map((e) => e.agent)).size}/${args.llm.length}`;
 		report.llmExit = llmExit;
 		if (llmExit !== 0) failed++;
 	}
