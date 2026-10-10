@@ -1,0 +1,43 @@
+/* The review inbox (inbox.html). Palette and pills come from styles.css and plans.css. */
+
+main.inbox { flex: 1; min-height: 0; overflow: auto; padding: 10px 16px; }
+main.inbox header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }
+main.inbox h1 { margin: 0; font-size: 16px; }
+#counter { color: var(--dim); }
+#counter b { color: var(--text); }
+.keys { font-size: 11px; color: var(--dim); }
+kbd { font: 10px var(--mono); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; margin: 0 1px; color: var(--text); background: var(--panel); }
+#status { min-height: 18px; margin-bottom: 6px; font-size: 12px; }
+#status.ok { color: var(--green); }
+#status.err { color: var(--red); }
+
+#cards { display: flex; flex-direction: column; gap: 10px; max-width: 980px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; cursor: pointer; scroll-margin: 12px; }
+.card.focus { outline: 2px solid var(--holding); outline-offset: -1px; cursor: default; }
+.card.deciding { opacity: .6; }
+.card .head { display: flex; align-items: center; gap: 10px; }
+.card .label { font-size: 14px; font-weight: 600; }
+.score { font: 600 11px var(--mono); padding: 1px 8px; border-radius: 10px; border: 1px solid currentColor; color: var(--holding); }
+ul.reasons { margin: 4px 0 6px; padding-left: 18px; color: var(--dim); font-size: 12px; }
+
+.item { border-top: 1px solid var(--line); padding: 6px 0; display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; }
+.item .what { min-width: 0; }
+.item .what a { text-decoration: none; }
+.item .what a:hover { text-decoration: underline; }
+.item .summary { color: var(--dim); font-size: 12px; }
+.item .paths { font: 11px var(--mono); color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item .when { color: var(--dim); font-size: 11px; text-align: right; white-space: nowrap; }
+.item ul.reasons { grid-column: 1 / -1; margin: 0; }
+
+.actions { display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.actions button { background: none; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 3px 10px; font: inherit; font-size: 12px; cursor: pointer; }
+.actions button:hover:not(:disabled) { background: var(--line); }
+.actions button:disabled { cursor: default; color: var(--dim); }
+.actions button.approve { border-color: var(--green); }
+.actions button.reject { border-color: var(--red); }
+.actions .busy { color: var(--dim); font-size: 12px; }
+.note-row { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+.note-row input { flex: 1; min-width: 0; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font: inherit; }
+.note-row input:focus { outline: none; border-color: var(--holding); }
+.note-row .hint { color: var(--dim); font-size: 11px; white-space: nowrap; }
+.empty { color: var(--dim); padding: 24px 0; font-size: 14px; }
