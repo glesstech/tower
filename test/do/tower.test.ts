@@ -755,7 +755,7 @@ describe("review by exception", () => {
 		expect((await t.call("POST", `/plans/${a.plan.id}/release`)).status).toBe(409);
 
 		const box = await t.inbox();
-		expect(box.decisions).toMatchObject([{ key: "sensitive:auth", label: "1 auth changes", count: 1, plans: [{ id: a.plan.id, agent: "a", summary: "s" }] }]);
+		expect(box.decisions).toMatchObject([{ key: "sensitive:auth", label: "1 auth change", count: 1, plans: [{ id: a.plan.id, agent: "a", summary: "s" }] }]);
 		expect(box.headline).toMatchObject({ agents: 2, conflictsReachedHuman: 0, decisions: 1, text: "2 agents, 0 conflicts reached a human, 1 decision required" });
 
 		const decided = await t.decide({ decision: "approve", group: "sensitive:auth" });

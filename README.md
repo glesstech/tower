@@ -89,11 +89,11 @@ Outside a trunk, `GET /repos` lists trunks with live counts. The operator key se
 
 The UI lives in `web/` and is served with Workers Static Assets. It is plain HTML, CSS and ES modules with no build step. A page loads without a key and calls the API with the `?key=` from its own URL.
 
-- **Home** (`/`) says what tower is and lists trunks with their counts, plus a link to the public demo trunk.
+- **Home** (`/`) says what tower is and lists trunks with their counts, plus a link to the public demo trunk. **Needs review** counts the changes waiting in each trunk's inbox (`review` in `GET /repos` counts) and stands out when it isn't zero.
 - **Dashboard** (`/repos/<repo>/dashboard?key=…`) has two views. **Operator**, the default, lists in-flight plans (agent, task, claims, coverage, fork, running time), what each holding plan waits on, held amendments, deadlock refusals, lands with their evidence, and an event feed backfilled from the event log. **Map** (`?view=map`, for demos) draws trunk as a treemap with each in-flight agent as a colored dot over the region it claims. The header counts conflicts prevented, drift blocked, deadlocks prevented, landed, forced broad claims and plans blocked by a broad claim. A strip below it charts lands per minute, queue depth and agents in flight over the last 10 minutes. With hundreds of plans, the page draws events at most once per frame, shows the oldest 40 rows of each list, and summarizes holding plans as one line per contested path. **Replay** plays the trunk's event log back at 1 to 64 times speed. **Save log** downloads the log, and **Load log** replays a saved file, so you can show a run after its trunk is gone.
 - **Plans** (`/repos/<repo>/plans`) lists every plan in the event log, newest first, filtered by status. Each plan has a shareable page at `/repos/<repo>/plans/<id>` that does the job of a pull request. The page shows the task (as markdown), the status and the time spent in each state, the claims and each amendment, the lifecycle from the event log, and the paths touched so far while the plan is in flight. Once the plan lands, the page also shows the trunk SHA, a diff of every changed file, the risk score and the evidence. Agents polling the same URL get JSON, because tower serves the page only for requests that ask for HTML.
 - **Code explorer** (`/repos/<repo>/code`) shows trunk HEAD's file tree with a badge on every path an active plan claims, the open file's contents, and every land that touched it.
-- **Inbox** (`/repos/<repo>/inbox`) lists the changes waiting for a human, one card per group, riskiest first. Each card shows the group's risk score and reasons, and each plan's agent, task (linking to its plan page for the diff and evidence), summary and paths. Approve, reject or send back a whole group with a click or from the keyboard: `j`/`k` move, `a` approves, `r` and `s` ask for a note for the agent first, `o` opens the plan. The header counts changes that landed on their own against those that needed a human. Like plan pages, tower serves the page only to requests that ask for HTML, so `GET /inbox` still returns JSON to API clients.
+- **Inbox** (`/repos/<repo>/inbox`) lists the changes waiting for a human, one card per group, riskiest first. Each card shows the group's risk score and reasons, and each plan's agent, task (linking to its plan page for the diff and evidence), summary and paths. Approve, reject or send back a whole group with a click or from the keyboard: `j`/`k` move, `a` approves, `r` and `s` ask for a note for the agent first, `o` opens the plan. The header counts changes that landed on their own against those that needed a human. On every page of a trunk, the nav's **Inbox** link carries a badge with the number of changes waiting for a human. Like plan pages, tower serves the page only to requests that ask for HTML, so `GET /inbox` still returns JSON to API clients.
 
 `web/client.js` holds the nav and the shared helpers (`api()`, `live()`, `el()`, `color()`, `ago()`). `web/model.js`, `web/plan-model.js` and `web/inbox-model.js` are DOM-free models of the dashboard, the plan pages and the inbox, unit-tested in Node. To add a page, add `web/<page>.html` and a nav entry in `web/client.js`. The page is then served at `/repos/:repo/<page>`. `npm run typecheck` also checks `web/` through JSDoc types (`web/tsconfig.json`).
 
@@ -155,6 +155,13 @@ TOWER_API_KEY=... npm run sim -- --repo sim1 --seed --agents 8 --modules 4 --dri
 
 With `--seed`, the sim deletes everything it created when it ends: the trunk, the forks and the Tower state. Pass `--keep` to inspect the trunk afterwards, and run `curl -X DELETE …/repos/<repo>` to remove it later.
 
+The sim's agents always pass their checks and only touch module files, so every land is low risk. To fill the inbox without LLM agents, pass `--review <n>`. The last n agents each change a sensitive file of their own, and `--seed` puts those files on trunk: auth files under `src/auth/`, one CI workflow under `.github/workflows/`, and one module file whose checks report a failure. Their lands answer 202 and wait in the inbox in up to three groups, while the rest land as usual. The summary reports `review` (how many went to review) and `reviewGroups` (how many per group). The conflict check and teardown still pass, and without `--keep` the teardown deletes the review plans' forks too.
+
+```sh
+# Leaves 3 changes in GET /repos/review-demo/inbox (auth, CI config, failing checks); the other 5 land
+TOWER_API_KEY=... npm run sim -- --repo review-demo --seed --keep --review 3
+```
+
 Tests:
 
 ```sh
@@ -193,6 +200,7 @@ TOWER_URL=https://tower-dev.<subdomain>.workers.dev TOWER_API_KEY=... \
 | max queue depth / in flight / active | The most plans holding, cleared, and both at once |
 | `artifactsCalls` | Calls tower made into the Artifacts binding (`stats.artifacts_calls`), an upper bound on billed operations. Add the sim's own git clones and pushes. |
 | conflicts | Modules whose content on trunk isn't exactly what their agents wrote |
+| review, reviewGroups | Lands that answered 202 and wait in the inbox (`--review`), in total and per group |
 
 **Recorded run (2026-10-06): 250 agents, 0 conflicts.** The run used `npm run sim -- --repo scale28-r250 --seed --agents 250 --modules 50 --stagger 20 --quiet` against the deployed `tower-dev` Worker, before the landing changes below were deployed. All 250 agents filed within 20 seconds, and up to 246 plans were active at once. The hottest module, `m0`, drew 51 agents, then `m1` drew 33 and `m2` drew 17. Every agent landed. Trunk ended with exactly one commit per land, and every module held exactly its agents' lines.
 

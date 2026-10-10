@@ -39,10 +39,32 @@ export function nav() {
 		if (path == null) continue;
 		const a = el("a", path === location.pathname ? "active" : "", entry.label);
 		a.href = withKey(path);
+		a.dataset.page = entry.label;
 		bar.appendChild(a);
 	}
 	document.body.insertBefore(bar, document.body.firstChild);
+	// The inbox page sets its own badge from the data it already loads.
+	const inbox = bar.querySelector('a[data-page="Inbox"]');
+	if (inbox && !inbox.classList.contains("active")) {
+		api("/inbox").then((data) => inboxBadge(waiting(data.decisions))).catch(() => {});
+	}
 	return bar;
+}
+
+/** Changes waiting for a human across GET /inbox's decisions. @param {{ count: number }[]} decisions */
+export function waiting(decisions) {
+	return decisions.reduce((n, d) => n + d.count, 0);
+}
+
+/** Shows how many changes wait for a human on the nav's Inbox link; 0 hides the badge. */
+export function inboxBadge(/** @type {number} */ n) {
+	const link = document.querySelector('.topnav a[data-page="Inbox"]');
+	if (!link) return;
+	let badge = link.querySelector(".count");
+	if (!n) return badge?.remove();
+	if (!badge) badge = link.appendChild(el("span", "count"));
+	badge.textContent = String(n);
+	link.setAttribute("title", n + (n === 1 ? " change" : " changes") + " waiting for a human");
 }
 
 /** A non-2xx API response: its status and the server's `error` message. */

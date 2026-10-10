@@ -5,7 +5,7 @@
 // note). Each plan links to its page for the diff and evidence. Reads GET /inbox, decides through
 // POST /inbox/decide (operator key only), and refetches when the live feed says the inbox moved.
 
-import { $, ApiError, REPO, ago, api, color, el, failure, live, nav, withKey } from "./client.js";
+import { $, ApiError, REPO, ago, api, color, el, failure, inboxBadge, live, nav, waiting, withKey } from "./client.js";
 import { firstLine } from "./model.js";
 import { REFETCH, cards, keyAction, outcome, refocus, step } from "./inbox-model.js";
 
@@ -45,6 +45,7 @@ async function load() {
 		list = next;
 		loaded = true;
 		counter(data.headline);
+		inboxBadge(waiting(data.decisions));
 		render();
 	} catch (err) {
 		$("cards").replaceChildren(failure(err));
