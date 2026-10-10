@@ -21,8 +21,8 @@
 // watched. --plain runs the same workload on a local bare repo with no tower (no key needed)
 // and counts merge conflicts (each one an edit redone) and rejected pushes: the contrast for a demo.
 // --llm "<task>" (repeatable) starts real Claude Code agents through swarm/swarm.mjs on the same
-// trunk before the scripted ones (--model passes through); the sim waits for them before it
-// reports, and Ctrl-C stops them and still tears down.
+// trunk before the scripted ones, on the cheap model unless --model names one. The sim waits for
+// them before it reports, and Ctrl-C stops them and still tears down.
 //
 //   TOWER_URL=http://localhost:8787 TOWER_API_KEY=... node sim/agents.mjs --repo demo --seed --agents 8 --drift 1
 //   node sim/agents.mjs --plain --agents 30 --modules 4
@@ -500,7 +500,8 @@ async function plainRun(work) {
 let llm = null;
 function startLlm() {
 	const swarm = new URL("../swarm/swarm.mjs", import.meta.url).pathname;
-	const argv = [swarm, "--repo", args.repo, "--agent", "claude", ...args.llm.flatMap((t) => ["--task", t]), ...(args.model ? ["--model", args.model] : [])];
+	// A sim run is test or demo work, so the agents run on the cheap model unless --model names one.
+	const argv = [swarm, "--repo", args.repo, "--agent", "claude", ...args.llm.flatMap((t) => ["--task", t]), ...(args.model ? ["--model", args.model] : ["--cheap"])];
 	log("llm", `starting ${args.llm.length} agent(s): swarm ${argv.slice(1).join(" ")}`);
 	// Its own process group, so stopping the sim can stop the swarm and the agents it started.
 	const child = spawn(process.execPath, argv, { env: { ...process.env, TOWER_URL: BASE, TOWER_API_KEY: KEY }, stdio: ["ignore", "pipe", "pipe"], detached: true });
