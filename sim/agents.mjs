@@ -19,7 +19,7 @@
 //
 // The seed is a small Worker app listing each module's agents, so trunk can be deployed and
 // watched. --plain runs the same workload on a local bare repo with no tower (no key needed)
-// and counts merge conflicts, rejected pushes and redone edits: the contrast for a demo.
+// and counts merge conflicts (each one an edit redone) and rejected pushes: the contrast for a demo.
 // --llm "<task>" (repeatable) starts real Claude Code agents through swarm/swarm.mjs on the same
 // trunk before the scripted ones (--model passes through); the sim waits for them before it
 // reports, and Ctrl-C stops them and still tears down.
@@ -421,7 +421,7 @@ async function verify(work, assigned, landed, remote, token) {
 // Each agent acts like an uncoordinated agent on a shared repo: clone, edit, commit, push. A
 // rejected push pulls with rebase; a rebase that conflicts is thrown away and the edit redone
 // on top of the new trunk. Everyone eventually lands, but every conflict is wasted work.
-const plain = { rejectedPushes: 0, mergeConflicts: 0, rework: 0 };
+const plain = { rejectedPushes: 0, mergeConflicts: 0 };
 
 async function plainAgent(i, m, remote, work) {
 	if (STAGGER) await sleep((STAGGER * i) / AGENTS + Math.random() * 250);
@@ -451,7 +451,6 @@ async function plainAgent(i, m, remote, work) {
 			log(name, `CONFLICT in ${file}, redoing the edit`);
 			await sh("rebase", "--abort").catch(() => {});
 			await sh("reset", "-q", "--hard", "origin/main");
-			plain.rework++;
 			await edit();
 		}
 	}
@@ -541,6 +540,8 @@ async function towerRun(work) {
 	const report = metrics(events, state.stats, startedAt, endedAt);
 	report.failed = failed;
 	if (llm) {
+		// The swarm exits 0 whether or not its agents landed, so count their lands too.
+		report.llmLanded = `${new Set(state.lands.filter((l) => l.agent.startsWith("claude-")).map((l) => l.agent)).size}/${args.llm.length}`;
 		report.llmExit = llmExit;
 		if (llmExit !== 0) failed++;
 	}
