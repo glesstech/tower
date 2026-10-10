@@ -12,6 +12,9 @@
 // pushes it, opens a GitHub PR with each agent's evidence and the combined check results, then
 // tears the trunk down so the next run starts from main. --checks "<cmd>" replaces the npm
 // typecheck/test default, for repos that don't use npm (e.g. --checks "go test ./...").
+// --model picks the model: each agent in agents.json defaults to a cheap one, so a test run
+// doesn't burn tokens. --model sonnet sets it for every agent, --model claude=opus,opencode=…
+// per agent.
 // --timeout (minutes, default 30) counts from when tower first clears the agent's plan, so time
 // spent holding behind other agents doesn't eat into it; an agent never cleared stops at 3x.
 
@@ -35,6 +38,7 @@ const { values: args } = parseArgs({
 		init: { type: "boolean", default: false },
 		pr: { type: "boolean", default: false },
 		checks: { type: "string" },
+		model: { type: "string" },
 		"dry-run": { type: "boolean", default: false },
 	},
 });
@@ -99,7 +103,7 @@ async function init() {
 function launch(agent, name, task, logDir, clock) {
 	return new Promise(async (done) => {
 		const dir = await mkdtemp(join(tmpdir(), `swarm-${name}-`));
-		const vars = { prompt: prompt(name, task.text), name, mcp_url: `${REPO_URL}/mcp`, auth: `Bearer ${KEY}` };
+		const vars = { prompt: prompt(name, task.text), name, model: agent.model, mcp_url: `${REPO_URL}/mcp`, auth: `Bearer ${KEY}` };
 		for (const [file, content] of Object.entries(agent.files ?? {})) {
 			await writeFile(join(dir, file), JSON.stringify(fill(content, vars), null, 2));
 		}
@@ -165,7 +169,13 @@ async function choosePool(agents) {
 
 const { agents } = JSON.parse(await readFile(resolve(args.config), "utf8"));
 const { pool, how } = await choosePool(agents);
-log("swarm", `agents: ${pool.map((a) => a.name).join(", ")} (${how})`);
+for (const spec of (args.model ?? "").split(",").map((s) => s.trim()).filter(Boolean)) {
+	const [name, model] = spec.includes("=") ? spec.split("=") : [null, spec];
+	const targets = name ? pool.filter((a) => a.name === name) : pool;
+	if (!targets.length) throw new Error(`--model ${spec}: no agent named ${name} in this run`);
+	for (const a of targets) a.model = model;
+}
+log("swarm", `agents: ${pool.map((a) => `${a.name} (${a.model})`).join(", ")} (${how})`);
 
 const work = (await tasks()).map((task, i) => {
 	const agent = pool[i % pool.length];
@@ -173,7 +183,7 @@ const work = (await tasks()).map((task, i) => {
 });
 
 if (args["dry-run"]) {
-	for (const w of work) console.log(`${w.name}: ${fill(w.agent.cmd, { prompt: "<prompt>", mcp_url: `${REPO_URL}/mcp`, auth: "Bearer ***" }).join(" ")}\n  task: ${w.task.text.split("\n")[0]}`);
+	for (const w of work) console.log(`${w.name}: ${fill(w.agent.cmd, { prompt: "<prompt>", model: w.agent.model, mcp_url: `${REPO_URL}/mcp`, auth: "Bearer ***" }).join(" ")}\n  task: ${w.task.text.split("\n")[0]}`);
 	process.exit(0);
 }
 

@@ -1,11 +1,12 @@
 {
-  "//": "Agents the swarm can start. By default it uses the agent that launched it (nearest ancestor process in detect.process, else an env var in detect.env), falling back to the first entry; --agent a,b overrides and deals tasks out round-robin. cmd is argv (no shell). files are written into each agent's working directory before it starts. Placeholders: {prompt} {name} {mcp_url} {auth}.",
+  "//": "Agents the swarm can start. By default it uses the agent that launched it (nearest ancestor process in detect.process, else an env var in detect.env), falling back to the first entry; --agent a,b overrides and deals tasks out round-robin. cmd is argv (no shell). files are written into each agent's working directory before it starts. Placeholders: {prompt} {name} {model} {mcp_url} {auth}. model is the default model, kept cheap so test runs don't burn tokens; --model overrides it.",
   "agents": [
     {
       "name": "claude",
       "detect": { "process": ["claude"], "env": ["CLAUDECODE"] },
+      "model": "haiku",
       "cmd": [
-        "claude", "-p", "{prompt}", "--output-format", "stream-json", "--verbose",
+        "claude", "-p", "{prompt}", "--model", "{model}", "--output-format", "stream-json", "--verbose",
         "--mcp-config", "mcp.json", "--strict-mcp-config",
         "--permission-mode", "acceptEdits",
         "--allowedTools", "mcp__tower__*", "Bash", "Read", "Edit", "Write"
@@ -17,7 +18,8 @@
     {
       "name": "opencode",
       "detect": { "process": ["opencode"], "env": ["OPENCODE"] },
-      "cmd": ["opencode", "run", "-m", "opencode/gemini-3.5-flash", "{prompt}"],
+      "model": "opencode/gemini-3.5-flash",
+      "cmd": ["opencode", "run", "-m", "{model}", "{prompt}"],
       "files": {
         "opencode.json": {
           "$schema": "https://opencode.ai/config.json",
