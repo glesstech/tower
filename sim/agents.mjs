@@ -161,10 +161,36 @@ function reviewer(i) {
 }
 
 // The seed commit, the same for tower and --plain so the two runs start from one trunk.
+// It is a small Worker that lists every module's agents, so a Worker connected to trunk through
+// Workers Builds redeploys on each land and the page fills in as agents land.
 async function writeSeed(dir) {
 	await mkdir(join(dir, "src/modules"), { recursive: true });
-	await writeFile(join(dir, "README.md"), "# demo\n");
-	for (let m = 0; m < MODULES; m++) await writeFile(join(dir, `src/modules/m${m}.ts`), `export const m${m} = [];\n`);
+	const worker = `tower-demo-${args.repo}`.toLowerCase().replace(/[^a-z0-9-]+/g, "-").slice(0, 63).replace(/-+$/, "");
+	const mods = Array.from({ length: MODULES }, (_, m) => `m${m}`);
+	await writeFile(join(dir, "README.md"), `# demo\n\nA Worker that lists which agents landed in each module. Deploy with \`npm run deploy\`.\n`);
+	await writeFile(join(dir, "package.json"), `${JSON.stringify({ name: worker, private: true, scripts: { deploy: "wrangler deploy" }, devDependencies: { wrangler: "^4" } }, null, 2)}\n`);
+	await writeFile(join(dir, "wrangler.jsonc"), `${JSON.stringify({ name: worker, main: "src/index.ts", compatibility_date: "2026-09-01" }, null, 2)}\n`);
+	for (const mod of mods) await writeFile(join(dir, `src/modules/${mod}.ts`), `export const ${mod}: string[] = [];\n`);
+	await writeFile(
+		join(dir, "src/index.ts"),
+		`${mods.map((mod) => `import { ${mod} } from "./modules/${mod}";`).join("\n")}
+
+const modules: Record<string, string[]> = { ${mods.join(", ")} };
+const esc = (s: string) => s.replace(/[&<>"]/g, (c) => \`&#\${c.charCodeAt(0)};\`);
+
+export default {
+	fetch(): Response {
+		const sections = Object.entries(modules)
+			.map(([name, agents]) => \`<section><h2>\${name} <small>\${agents.length}</small></h2><ul>\${agents.map((a) => \`<li>\${esc(a)}</li>\`).join("")}</ul></section>\`)
+			.join("");
+		const html = \`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>demo</title>
+<style>body{font:15px system-ui;margin:2rem;display:grid;gap:1rem;grid-template-columns:repeat(auto-fill,minmax(12rem,1fr))}h1{grid-column:1/-1}small{color:#888}</style>
+<h1>Agents by module</h1>\${sections}\`;
+		return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+	},
+};
+`,
+	);
 	for (let i = AGENTS - REVIEW; i < AGENTS; i++) {
 		const { file, seed: text } = reviewer(i);
 		await mkdir(join(dir, file, ".."), { recursive: true });
@@ -500,6 +526,7 @@ try {
 		const { body: gone } = await api("DELETE", "", undefined, true).catch((err) => ({ body: { deleted: `none (${err.message})` } }));
 		console.log(`cleanup: deleted ${gone.deleted} repos and reset the tower`);
 	}
-	await rm(work, { recursive: true, force: true });
+	if (args.plain && args.keep) console.log(`kept the plain repo: git clone ${join(work, "plain.git")}`);
+	else await rm(work, { recursive: true, force: true });
 }
 if (failed) process.exit(1);
