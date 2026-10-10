@@ -44,11 +44,12 @@ const { values: args } = parseArgs({
 		quiet: { type: "boolean", default: false },
 		seed: { type: "boolean", default: false },
 		keep: { type: "boolean", default: false },
+		plain: { type: "boolean", default: false },
 	},
 });
 const BASE = process.env.TOWER_URL ?? "http://localhost:8787";
 const KEY = process.env.TOWER_API_KEY;
-if (!KEY) throw new Error("set TOWER_API_KEY");
+if (!KEY && !args.plain) throw new Error("set TOWER_API_KEY");
 const AGENTS = Number(args.agents);
 const MODULES = Number(args.modules);
 const DRIFT = Number(args.drift);
@@ -113,7 +114,8 @@ async function limited(fn) {
 }
 const git = (cwd, token, ...cmd) => {
 	if (cmd[0] in gitOps) gitOps[cmd[0]]++;
-	return limited(() => run("git", ["-c", `http.extraHeader=Authorization: Bearer ${token}`, ...cmd], { cwd }));
+	const auth = token ? ["-c", `http.extraHeader=Authorization: Bearer ${token}`] : [];
+	return limited(() => run("git", [...auth, ...cmd], { cwd }));
 };
 
 const log = (who, msg) => {
@@ -158,10 +160,8 @@ function reviewer(i) {
 	return { file: `src/auth/r${i}.ts`, seed: `export const r${i} = [];\n`, line: (name) => `r${i}.push(${JSON.stringify(name)});\n`, evidence: PASSING };
 }
 
-async function seed(work) {
-	const { status, body } = await api("POST", "/init");
-	if (status !== 200) throw new Error(`init failed: ${JSON.stringify(body)}`);
-	const dir = join(work, "seed");
+// The seed commit, the same for tower and --plain so the two runs start from one trunk.
+async function writeSeed(dir) {
 	await mkdir(join(dir, "src/modules"), { recursive: true });
 	await writeFile(join(dir, "README.md"), "# demo\n");
 	for (let m = 0; m < MODULES; m++) await writeFile(join(dir, `src/modules/m${m}.ts`), `export const m${m} = [];\n`);
@@ -172,7 +172,14 @@ async function seed(work) {
 	}
 	await run("git", ["init", "-b", "main"], { cwd: dir });
 	await run("git", ["add", "."], { cwd: dir });
-	await run("git", ["-c", "user.name=seed", "-c", "user.email=seed@tower.local", "commit", "-m", "seed"], { cwd: dir });
+	await run("git", ["-c", "user.name=seed", "-c", "user.email=seed@tower.local", "commit", "-qm", "seed"], { cwd: dir });
+}
+
+async function seed(work) {
+	const { status, body } = await api("POST", "/init");
+	if (status !== 200) throw new Error(`init failed: ${JSON.stringify(body)}`);
+	const dir = join(work, "seed");
+	await writeSeed(dir);
 	await git(dir, body.token, "push", body.remote, `HEAD:${body.branch ?? "main"}`);
 	log("seed", `trunk ${body.remote}`);
 }
@@ -356,10 +363,9 @@ function metrics(events, stats, startedAt, endedAt) {
 // Zero conflicts, checked on trunk itself: every module holds exactly the lines of the agents
 // that picked it, each once, and trunk has one commit per land on top of the seed. Changes
 // waiting for review have no module and no commit on trunk.
-async function verify(work, assigned, landed) {
-	const { body: read } = await api("POST", "/token");
+async function verify(work, assigned, landed, remote, token) {
 	const dir = join(work, "verify");
-	await git(work, read.token, "clone", "-q", read.remote, dir);
+	await git(work, token, "clone", "-q", remote, dir);
 	const problems = [];
 	for (let m = 0; m < MODULES; m++) {
 		const text = await readFile(join(dir, `src/modules/m${m}.ts`), "utf8");
@@ -372,10 +378,80 @@ async function verify(work, assigned, landed) {
 	return problems;
 }
 
-const work = await mkdtemp(join(tmpdir(), "tower-sim-"));
-let failed = 0;
-let seeded = false;
-try {
+// ── plain git: the same workload with no tower ──────────────────────────────
+
+// Each agent acts like an uncoordinated agent on a shared repo: clone, edit, commit, push. A
+// rejected push pulls with rebase; a rebase that conflicts is thrown away and the edit redone
+// on top of the new trunk. Everyone eventually lands, but every conflict is wasted work.
+const plain = { rejectedPushes: 0, mergeConflicts: 0, rework: 0 };
+
+async function plainAgent(i, m, remote, work) {
+	if (STAGGER) await sleep((STAGGER * i) / AGENTS + Math.random() * 250);
+	const name = `agent-${i}`;
+	const file = `src/modules/m${m}.ts`;
+	const dir = join(work, name);
+	await git(work, null, "clone", "-q", remote, dir);
+	const sh = (...cmd) => run("git", ["-c", `user.name=${name}`, "-c", `user.email=${name}@tower.local`, ...cmd], { cwd: dir });
+	const edit = async () => {
+		await appendFile(join(dir, file), `m${m}.push(${JSON.stringify(name)});\n`);
+		await sh("commit", "-qam", `${name}: extend ${file}`);
+	};
+	await edit();
+	// Each round of rejections lets at least one agent through, so AGENTS rounds always suffice.
+	for (let attempt = 1; ; attempt++) {
+		try {
+			await git(dir, null, "push", "-q", "origin", "HEAD:main");
+			log(name, `pushed ${file}${attempt > 1 ? ` on try ${attempt}` : ""}`);
+			break;
+		} catch {}
+		plain.rejectedPushes++;
+		if (attempt > AGENTS) throw new Error(`${name} gave up after ${attempt} rejected pushes`);
+		try {
+			await sh("pull", "-q", "--rebase", "origin", "main");
+		} catch {
+			plain.mergeConflicts++;
+			log(name, `CONFLICT in ${file}, redoing the edit`);
+			await sh("rebase", "--abort").catch(() => {});
+			await sh("reset", "-q", "--hard", "origin/main");
+			plain.rework++;
+			await edit();
+		}
+	}
+	await rm(dir, { recursive: true, force: true });
+}
+
+async function plainRun(work) {
+	const remote = join(work, "plain.git");
+	await run("git", ["init", "-q", "--bare", "-b", "main", remote]);
+	const dir = join(work, "seed");
+	await writeSeed(dir);
+	await git(dir, null, "push", "-q", remote, "HEAD:main");
+	const assigned = modulesFor(AGENTS);
+	const startedAt = Date.now();
+	const results = await Promise.allSettled(assigned.map((m, i) => plainAgent(i, m, remote, work)));
+	const endedAt = Date.now();
+	for (const r of results) if (r.status === "rejected") (failed++, console.error(r.reason));
+	const problems = await verify(work, assigned, AGENTS - failed, remote, null);
+	for (const p of problems) console.error(`CONTENT ${p}`);
+	const report = {
+		mode: "plain git (no tower)",
+		agents: AGENTS,
+		modules: MODULES,
+		zipf: ZIPF,
+		durationSec: Math.round((endedAt - startedAt) / 1000),
+		pushed: AGENTS - failed,
+		...plain,
+		failed,
+		contentProblems: problems.length,
+	};
+	failed += problems.length;
+	console.log("\nplain git");
+	for (const [k, v] of Object.entries(report)) console.log(`  ${k.padEnd(18)} ${v}`);
+	console.log("\nThe same workload on tower (drop --plain, add --seed) reports conflictsPrevented: agents wait for their claim instead of colliding.");
+	if (args.out) await writeFile(args.out, JSON.stringify({ repo: args.repo, savedAt: Date.now(), report }));
+}
+
+async function towerRun(work) {
 	if (args.seed) {
 		seeded = true; // init may have created trunk even if seeding fails after it
 		await seed(work);
@@ -391,7 +467,8 @@ try {
 	const report = metrics(events, state.stats, startedAt, endedAt);
 	report.failed = failed;
 	if (args.seed) {
-		const problems = await verify(work, assigned, report.landed);
+		const { body: read } = await api("POST", "/token");
+		const problems = await verify(work, assigned, report.landed, read.remote, read.token);
 		report.conflicts = problems.length;
 		for (const p of problems) console.error(`CONFLICT ${p}`);
 		failed += problems.length;
@@ -408,6 +485,13 @@ try {
 		await writeFile(args.out, JSON.stringify({ repo: args.repo, savedAt: Date.now(), report, state, events }));
 		console.log(`\nwrote ${args.out} (load it in the dashboard with Load log)`);
 	}
+}
+
+const work = await mkdtemp(join(tmpdir(), "tower-sim-"));
+let failed = 0;
+let seeded = false;
+try {
+	await (args.plain ? plainRun(work) : towerRun(work));
 } catch (err) {
 	failed++;
 	console.error(err);
