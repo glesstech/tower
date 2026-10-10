@@ -163,6 +163,23 @@ The sim's agents always pass their checks and only touch module files, so every 
 TOWER_API_KEY=... npm run sim -- --repo review-demo --seed --keep --review 3
 ```
 
+### Demo: plain Git, tower, and real agents
+
+`--plain` runs the same workload (same `--agents`, `--modules`, `--zipf`, `--rng` and `--stagger`) against a local bare repo with no tower, and needs no key. Each agent does what an uncoordinated agent does on a shared repo: clone, edit, commit, push. A rejected push pulls with rebase, and a rebase that conflicts is thrown away and the edit redone on the new trunk. The run reports `rejectedPushes`, `mergeConflicts` and `rework`, then checks the content the same way as `--seed`. Everyone gets there in the end, but every conflict is work done twice. On tower the same workload reports `conflictsPrevented` instead, because agents wait for their claim. 8 agents over 4 modules gave 11 merge conflicts and 28 rejected pushes, and 30 agents gave 152 and 298. `--keep` keeps the bare repo and prints its path.
+
+```sh
+npm run sim -- --plain --agents 30 --modules 4    # no tower, no key: count the merge conflicts
+```
+
+The seed commit is a small Worker app: `package.json`, `wrangler.jsonc` (named `tower-demo-<repo>`), one `src/modules/m<k>.ts` per module, and `src/index.ts`, which serves a page listing the agents in each module. To watch it fill in, run the sim with `--keep` once, then connect the trunk in the Cloudflare dashboard under **Workers & Pages > Create application > Continue with Artifacts**, picking the tower namespace and the trunk repo, with `main` as the production branch. Every later land redeploys the page. Forks are separate repos, not branches of trunk, so Workers Builds preview URLs don't apply to them.
+
+`--llm "<task>"` (repeatable) mixes real agents into a tower run. After seeding, the sim starts `swarm/swarm.mjs --agent claude` with one Claude Code agent per task on the same trunk, then starts the scripted agents. `--model` is passed through to the swarm, which otherwise uses its cheap default. Swarm output is prefixed `llm`, and the agents' own logs go to `swarm-logs/`. The sim waits for the swarm before it reports, verifies and tears down. It reports the swarm's exit code as `llmExit` and fails if that is nonzero. Ctrl-C stops the swarm and its agents and still tears down, and a second Ctrl-C exits at once. Real agents take minutes, so spread the scripted agents with `--stagger` over a few minutes to have both in flight together. A task that edits a hot module (`m0`) makes tower hold scripted agents behind a real one.
+
+```sh
+TOWER_URL=https://tower-dev.<subdomain>.workers.dev TOWER_API_KEY=... npm run sim -- --repo demo --seed \
+	--agents 20 --modules 4 --stagger 240 --llm "Add a GET /health route to src/index.ts that returns ok"
+```
+
 Tests:
 
 ```sh

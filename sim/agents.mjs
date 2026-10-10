@@ -17,7 +17,15 @@
 // more than one group. Each has a file of its own (a change in review keeps its claims), which
 // --seed puts on trunk. The rest land as usual; the summary counts what went to review.
 //
+// The seed is a small Worker app listing each module's agents, so trunk can be deployed and
+// watched. --plain runs the same workload on a local bare repo with no tower (no key needed)
+// and counts merge conflicts, rejected pushes and redone edits: the contrast for a demo.
+// --llm "<task>" (repeatable) starts real Claude Code agents through swarm/swarm.mjs on the same
+// trunk before the scripted ones (--model passes through); the sim waits for them before it
+// reports, and Ctrl-C stops them and still tears down.
+//
 //   TOWER_URL=http://localhost:8787 TOWER_API_KEY=... node sim/agents.mjs --repo demo --seed --agents 8 --drift 1
+//   node sim/agents.mjs --plain --agents 30 --modules 4
 //   TOWER_API_KEY=... node sim/agents.mjs --repo scale --seed --agents 500 --modules 50 --stagger 120
 //   TOWER_API_KEY=... node sim/agents.mjs --repo review-demo --seed --keep --review 3
 
