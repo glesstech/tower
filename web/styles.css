@@ -22,3 +22,4 @@ code { font: 11px var(--mono); }
 .topnav a { color: var(--dim); text-decoration: none; padding: 3px 10px; border-radius: 6px; }
 .topnav a:hover { color: var(--text); background: rgba(255,255,255,.05); }
 .topnav a.active { color: var(--text); background: var(--line); }
+.topnav a .count { margin-left: 5px; padding: 0 6px; border-radius: 9px; background: #d29922; color: #0d1117; font-size: 11px; font-weight: 700; }

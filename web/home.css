@@ -14,6 +14,7 @@ main.home h2 { margin: 32px 0 10px; font-size: 13px; color: var(--dim); text-tra
 #trunks th, #trunks td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--line); }
 #trunks th { color: var(--dim); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
 #trunks td.n { font-variant-numeric: tabular-nums; }
+#trunks td.waiting { color: #d29922; font-weight: 700; }
 #trunks td.go { text-align: right; white-space: nowrap; }
 #trunks td.go a { margin-left: 6px; padding: 2px 8px; }
 #trunks tr:last-child td { border-bottom: 0; }

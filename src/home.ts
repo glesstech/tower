@@ -10,23 +10,24 @@
 
 import { access } from "./dashboard/access";
 
-export type Counts = { in_flight: number; holding: number; landed: number; conflicts_prevented: number };
+export type Counts = { in_flight: number; holding: number; review: number; landed: number; conflicts_prevented: number };
 export type Trunk = { repo: string; counts: Counts | null };
 
-type State = { plans?: { status: string }[]; stats?: Record<string, number> };
+type State = { plans?: { status: string; review?: unknown }[]; stats?: Record<string, number> };
 
 /** Trunk names among Artifacts repos: forks are named <trunk>--<plan id>. */
 export function trunkNames(repos: { name: string }[]): string[] {
 	return repos.map((r) => r.name).filter((name) => !name.includes("--")).sort();
 }
 
-/** The home page counters from a Tower's /state. */
+/** The home page counters from a Tower's /state. `review` counts changes waiting in the inbox. */
 export function counts(state: State): Counts {
 	const plans = state.plans ?? [];
 	const stats = state.stats ?? {};
 	return {
 		in_flight: plans.filter((p) => p.status === "cleared").length,
 		holding: plans.filter((p) => p.status === "holding").length,
+		review: plans.filter((p) => p.status === "cleared" && p.review).length,
 		landed: stats.landed ?? 0,
 		conflicts_prevented: stats.conflicts_prevented ?? 0,
 	};

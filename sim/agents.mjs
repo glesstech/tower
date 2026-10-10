@@ -11,8 +11,15 @@
 // conflicts), and tears everything down (trunk, forks, Tower state) unless --keep is passed.
 // --out writes the metrics and the event log as JSON, so a run can be replayed later.
 //
+// --review n makes the last n agents change a sensitive path instead of a module, so their land
+// answers 202 and waits in the human inbox: auth files (src/auth/), one CI workflow
+// (.github/workflows/), and one module land whose checks report a failure, so the inbox shows
+// more than one group. Each has a file of its own (a change in review keeps its claims), which
+// --seed puts on trunk. The rest land as usual; the summary counts what went to review.
+//
 //   TOWER_URL=http://localhost:8787 TOWER_API_KEY=... node sim/agents.mjs --repo demo --seed --agents 8 --drift 1
 //   TOWER_API_KEY=... node sim/agents.mjs --repo scale --seed --agents 500 --modules 50 --stagger 120
+//   TOWER_API_KEY=... node sim/agents.mjs --repo review-demo --seed --keep --review 3
 
 import { execFile } from "node:child_process";
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -27,6 +34,7 @@ const { values: args } = parseArgs({
 		agents: { type: "string", default: "8" },
 		modules: { type: "string", default: "4" },
 		drift: { type: "string", default: "0" },
+		review: { type: "string", default: "0" },
 		zipf: { type: "string", default: "1" },
 		stagger: { type: "string", default: "0" },
 		git: { type: "string", default: "24" },
@@ -44,6 +52,8 @@ if (!KEY) throw new Error("set TOWER_API_KEY");
 const AGENTS = Number(args.agents);
 const MODULES = Number(args.modules);
 const DRIFT = Number(args.drift);
+const REVIEW = Number(args.review);
+if (!(REVIEW >= 0 && REVIEW <= AGENTS)) throw new Error("--review must be between 0 and --agents");
 const ZIPF = Number(args.zipf);
 const STAGGER = Number(args.stagger) * 1000;
 const POLL = Number(args.poll);
@@ -133,6 +143,21 @@ function modulesFor(n) {
 	});
 }
 
+const PASSING = { checks: "1 passed, 0 failed", tests: { passed: 1, failed: 0 } };
+
+// The --review agents (the last n) and what each changes: auth files, one CI workflow, one
+// module land with a failing check. Each file is the agent's own, so no one queues behind it.
+function reviewer(i) {
+	const r = i - (AGENTS - REVIEW);
+	if (r < 0) return null;
+	if (r === 1) return { file: `.github/workflows/sim-${i}.yml`, seed: "name: sim\n", line: (name) => `# ${name}\n`, evidence: PASSING };
+	if (r === 2) {
+		const evidence = { checks: "1 passed, 1 failed", tests: { passed: 1, failed: 1 } };
+		return { file: `src/modules/review-${i}.ts`, seed: `export const r${i} = [];\n`, line: (name) => `r${i}.push(${JSON.stringify(name)});\n`, evidence };
+	}
+	return { file: `src/auth/r${i}.ts`, seed: `export const r${i} = [];\n`, line: (name) => `r${i}.push(${JSON.stringify(name)});\n`, evidence: PASSING };
+}
+
 async function seed(work) {
 	const { status, body } = await api("POST", "/init");
 	if (status !== 200) throw new Error(`init failed: ${JSON.stringify(body)}`);
@@ -140,6 +165,11 @@ async function seed(work) {
 	await mkdir(join(dir, "src/modules"), { recursive: true });
 	await writeFile(join(dir, "README.md"), "# demo\n");
 	for (let m = 0; m < MODULES; m++) await writeFile(join(dir, `src/modules/m${m}.ts`), `export const m${m} = [];\n`);
+	for (let i = AGENTS - REVIEW; i < AGENTS; i++) {
+		const { file, seed: text } = reviewer(i);
+		await mkdir(join(dir, file, ".."), { recursive: true });
+		await writeFile(join(dir, file), text);
+	}
 	await run("git", ["init", "-b", "main"], { cwd: dir });
 	await run("git", ["add", "."], { cwd: dir });
 	await run("git", ["-c", "user.name=seed", "-c", "user.email=seed@tower.local", "commit", "-m", "seed"], { cwd: dir });
@@ -149,13 +179,16 @@ async function seed(work) {
 
 // Client-side timings per agent: when it asked to land and how long the answer took.
 const timings = [];
+// Lands that answered 202 and wait in the inbox: agent and group label.
+const reviews = [];
 
 async function agent(i, m, work) {
 	if (STAGGER) await sleep((STAGGER * i) / AGENTS + Math.random() * 250);
 	const name = `agent-${i}`;
+	const review = reviewer(i);
 	const mod = `m${m}`;
-	const file = `src/modules/${mod}.ts`;
-	const drifts = i < DRIFT;
+	const file = review?.file ?? `src/modules/${mod}.ts`;
+	const drifts = i < DRIFT && !review;
 
 	let { body } = await api("POST", "/plans", { agent: name, task: `extend ${file}`, claims: [file] }).catch((err) => ({ body: { error: err.message } }));
 	if (!body.plan) {
@@ -170,7 +203,7 @@ async function agent(i, m, work) {
 	const id = body.plan.id;
 	log(name, `plan ${id} ${body.plan.status}${body.plan.blockedBy.length ? ` behind ${body.plan.blockedBy.length}` : ""}`);
 	try {
-		await fly({ name, id, mod, file, drifts, body, work });
+		await fly({ name, id, mod, file, drifts, review, body, work });
 	} catch (err) {
 		// Free the airspace so agents queued behind this one aren't stuck forever.
 		await api("POST", `/plans/${id}/release`).catch(() => {});
@@ -178,7 +211,7 @@ async function agent(i, m, work) {
 	}
 }
 
-async function fly({ name, id, mod, file, drifts, body, work }) {
+async function fly({ name, id, mod, file, drifts, review, body, work }) {
 	let clearedAt = null;
 	while (!body.fork) {
 		if (body.plan?.status === "cleared") clearedAt ??= Date.now();
@@ -196,18 +229,21 @@ async function fly({ name, id, mod, file, drifts, body, work }) {
 	const commit = (msg) =>
 		run("git", ["-c", `user.name=${name}`, "-c", `user.email=${name}@tower.local`, "commit", "-qam", msg], { cwd: dir });
 
-	await appendFile(join(dir, file), `${mod}.push(${JSON.stringify(name)});\n`);
+	await appendFile(join(dir, file), review ? review.line(name) : `${mod}.push(${JSON.stringify(name)});\n`);
+	// Without --seed a review file may be new; commit -a only stages tracked files.
+	if (review) await run("git", ["add", file], { cwd: dir });
 	if (drifts) await appendFile(join(dir, "README.md"), `${name} was here\n`);
 	await commit(`${name}: extend ${file}`);
 	await git(dir, token, "push", "-q", "origin", `HEAD:${branch}`);
 
-	const evidence = { prompt: `extend ${file}`, tests: { passed: 1, failed: 0 } };
+	const evidence = { prompt: `extend ${file}`, ...(review?.evidence ?? PASSING) };
 	const asked = Date.now();
-	// A land that errors may still have landed; the plan says so.
+	// A land that errors may still have landed, or gone to review; the plan says so.
 	const landOnce = async () => {
 		const res = await api("POST", `/plans/${id}/land`, { evidence }).catch((err) => ({ status: 599, body: { error: err.message } }));
 		if (res.status < 500) return res;
 		const { body: now } = await api("GET", `/plans/${id}`);
+		if (now.plan?.status === "cleared" && now.plan.review) return { status: 202, body: { review: now.plan.review.risk } };
 		return now.plan?.status === "landed" ? { status: 200, body: { sha: "(landed)", paths: [file] } } : res;
 	};
 	let res = await landOnce();
@@ -217,6 +253,14 @@ async function fly({ name, id, mod, file, drifts, body, work }) {
 		await commit(`${name}: stay inside lease`);
 		await git(dir, token, "push", "-q", "origin", `HEAD:${branch}`);
 		res = await landOnce();
+	}
+	if (res.status === 202) {
+		// Done: the plan keeps its claims and fork until a human decides it.
+		timings.push({ id, landMs: Date.now() - asked });
+		reviews.push({ agent: name, group: res.body.review.group.label });
+		await rm(dir, { recursive: true, force: true });
+		log(name, `REVIEW ${res.body.review.group.label}: ${res.body.review.reasons.join("; ")}`);
+		return;
 	}
 	if (res.status !== 200) throw new Error(`${name} land failed: ${JSON.stringify(res.body)}`);
 	timings.push({ id, landMs: Date.now() - asked });
@@ -290,6 +334,8 @@ function metrics(events, stats, startedAt, endedAt) {
 		durationSec: Math.round((endedAt - startedAt) / 1000),
 		plans,
 		landed: lands,
+		review: reviews.length,
+		reviewGroups: Object.fromEntries(Object.entries(Object.groupBy(reviews, (r) => r.group)).map(([g, rs]) => [g, rs.length])),
 		plansPerMin: +(plans / mins).toFixed(1),
 		landsPerMin: +(lands / mins).toFixed(1),
 		peakLandsPerMin: Math.max(0, ...rates.map((r) => r.lands)),
@@ -308,7 +354,8 @@ function metrics(events, stats, startedAt, endedAt) {
 }
 
 // Zero conflicts, checked on trunk itself: every module holds exactly the lines of the agents
-// that picked it, each once, and trunk has one commit per land on top of the seed.
+// that picked it, each once, and trunk has one commit per land on top of the seed. Changes
+// waiting for review have no module and no commit on trunk.
 async function verify(work, assigned, landed) {
 	const { body: read } = await api("POST", "/token");
 	const dir = join(work, "verify");
@@ -333,7 +380,8 @@ try {
 		seeded = true; // init may have created trunk even if seeding fails after it
 		await seed(work);
 	}
-	const assigned = modulesFor(AGENTS);
+	// Review agents pick no module (null); the rest keep the choices --rng gives them.
+	const assigned = modulesFor(AGENTS).map((m, i) => (reviewer(i) ? null : m));
 	const startedAt = Date.now();
 	const results = await Promise.allSettled(assigned.map((m, i) => agent(i, m, work)));
 	const endedAt = Date.now();
@@ -348,7 +396,7 @@ try {
 		for (const p of problems) console.error(`CONFLICT ${p}`);
 		failed += problems.length;
 	}
-	const heat = Object.entries(assigned.reduce((acc, m) => ((acc[m] = (acc[m] ?? 0) + 1), acc), {}))
+	const heat = Object.entries(assigned.reduce((acc, m) => (m !== null && (acc[m] = (acc[m] ?? 0) + 1), acc), {}))
 		.sort((a, b) => b[1] - a[1])
 		.slice(0, 5)
 		.map(([m, n]) => `m${m}×${n}`);

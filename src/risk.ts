@@ -138,6 +138,12 @@ function group(paths: string[], sensitive: [string, string][], semantic: boolean
 	return { key: `area:${area}`, label: `changes in ${area}` };
 }
 
+// A group's label with its count: "3 CI config changes", "1 CI config change". Labels from
+// group() are plural; stored reviews carry them as they were scored, so this reads either.
+export function counted(n: number, label: string): string {
+	return `${n} ${n === 1 ? label.replace(/\b(bump|change|overlap)s\b/, "$1") : label}`;
+}
+
 // The deepest directory (up to two levels) shared by every path, or "/" for the root.
 function topArea(paths: string[]): string {
 	const dirs = paths.map((p) => p.split("/").slice(0, -1).slice(0, 2));

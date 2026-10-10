@@ -15,11 +15,20 @@ describe("counts", () => {
 			plans: [{ status: "cleared" }, { status: "cleared" }, { status: "holding" }],
 			stats: { landed: 7, conflicts_prevented: 3, drift_blocked: 1 },
 		};
-		expect(counts(state)).toEqual({ in_flight: 2, holding: 1, landed: 7, conflicts_prevented: 3 });
+		expect(counts(state)).toEqual({ in_flight: 2, holding: 1, review: 0, landed: 7, conflicts_prevented: 3 });
+	});
+
+	it("counts changes waiting for a human", () => {
+		const review = { head: "abc", paths: ["src/auth/a.ts"] };
+		const state = {
+			plans: [{ status: "cleared", review }, { status: "cleared", review }, { status: "cleared", review: null }, { status: "holding" }],
+			stats: { landed: 1 },
+		};
+		expect(counts(state)).toMatchObject({ in_flight: 3, holding: 1, review: 2 });
 	});
 
 	it("reads an empty Tower as zeros", () => {
-		expect(counts({ plans: [], stats: {} })).toEqual({ in_flight: 0, holding: 0, landed: 0, conflicts_prevented: 0 });
+		expect(counts({ plans: [], stats: {} })).toEqual({ in_flight: 0, holding: 0, review: 0, landed: 0, conflicts_prevented: 0 });
 	});
 });
 
@@ -52,7 +61,7 @@ describe("demoAccess", () => {
 });
 
 describe("home", () => {
-	const state = { plans: [{ status: "cleared" }, { status: "holding" }], stats: { landed: 4, conflicts_prevented: 2 } };
+	const state = { plans: [{ status: "cleared" }, { status: "cleared", review: { head: "abc" } }, { status: "holding" }], stats: { landed: 4, conflicts_prevented: 2 } };
 	const env = (demo?: string, gone: string[] = []) =>
 		({
 			TOWER_DEMO_REPO: demo,
@@ -70,7 +79,7 @@ describe("home", () => {
 				getByName: () => ({ fetch: async () => Response.json(state) }),
 			},
 		}) as unknown as Env;
-	const c = { in_flight: 1, holding: 1, landed: 4, conflicts_prevented: 2 };
+	const c = { in_flight: 2, holding: 1, review: 1, landed: 4, conflicts_prevented: 2 };
 
 	it("lists every trunk across pages, with counts, for the operator", async () => {
 		expect(await home(env("a"), true)).toEqual({ demo: "a", trunks: [{ repo: "a", counts: c }, { repo: "b", counts: c }] });

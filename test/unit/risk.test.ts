@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evidence, type FileChange, importersOf, importSpecifiers, lineDelta, resolveImport, type RiskInput, score } from "../../src/risk";
+import { counted, evidence, type FileChange, importersOf, importSpecifiers, lineDelta, resolveImport, type RiskInput, score } from "../../src/risk";
 
 const edit = (path: string, added = 1, removed = 1): FileChange => ({ path, op: "upsert", added, removed });
 const input = (over: Partial<RiskInput> = {}): RiskInput => ({
@@ -72,6 +72,33 @@ describe("score", () => {
 		expect(key(".github/workflows/a.yml")).toEqual({ key: "sensitive:CI config", label: "CI config changes" });
 		expect(key("src/tower/a.ts", "src/tower/b.ts").key).toBe("area:src/tower/");
 		expect(key("src/a.ts", "web/b.js").key).toBe("area:/");
+	});
+
+	it("sends each of the sim's --review changes to review, in distinct groups", () => {
+		const passing = { checks: "1 passed, 0 failed" };
+		const risks = [
+			score(input({ changes: [edit("src/auth/r5.ts")], evidence: passing })),
+			score(input({ changes: [edit(".github/workflows/sim-6.yml")], evidence: passing })),
+			score(input({ changes: [edit("src/modules/review-7.ts")], evidence: { checks: "1 passed, 1 failed" } })),
+		];
+		expect(risks.map((r) => r.level)).toEqual(["review", "review", "review"]);
+		expect(new Set(risks.map((r) => r.group.key)).size).toBe(3);
+		expect(score(input({ changes: [edit("src/modules/m0.ts")], evidence: passing })).level).toBe("low");
+	});
+});
+
+describe("counted", () => {
+	it("prefixes the count and reads right in the singular", () => {
+		expect(counted(3, "CI config changes")).toBe("3 CI config changes");
+		expect(counted(1, "CI config changes")).toBe("1 CI config change");
+		expect(counted(1, "auth+billing changes")).toBe("1 auth+billing change");
+		expect(counted(1, "dependency bumps")).toBe("1 dependency bump");
+		expect(counted(1, "docs changes")).toBe("1 docs change");
+		expect(counted(1, "test-only changes")).toBe("1 test-only change");
+		expect(counted(1, "semantic overlaps in src/tower/")).toBe("1 semantic overlap in src/tower/");
+		expect(counted(1, "changes in src/")).toBe("1 change in src/");
+		expect(counted(1, "unscored changes")).toBe("1 unscored change");
+		expect(counted(2, "changes in src/")).toBe("2 changes in src/");
 	});
 });
 

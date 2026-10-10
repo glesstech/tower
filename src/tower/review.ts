@@ -10,7 +10,7 @@
 // callers. Running the checks themselves against the composed tree needs a build runner,
 // which a Worker is not; this catches the shape of the conflict and sends it to a human.
 
-import { type FileChange, importersOf, importSpecifiers, lineDelta, type Overlap, type Risk, resolveImport, SOURCE, score } from "../risk";
+import { counted, type FileChange, importersOf, importSpecifiers, lineDelta, type Overlap, type Risk, resolveImport, SOURCE, score } from "../risk";
 import type { Change } from "../treediff";
 import { branch, type Core, json, type Plan, type PlanRow, plan as getPlan, type Review, repo, serial, toPlan, trunkHead } from "./core";
 import { bump, emitPlan } from "./events";
@@ -193,7 +193,7 @@ export function inbox(t: Core) {
 		g.plans.push({ id: p.id, agent: p.agent, task: p.task, summary: r.summary ?? null, paths: r.paths, risk: r.risk, requestedAt: r.requestedAt });
 		groups.set(g.key, g);
 	}
-	const decisions = [...groups.values()].map((g) => ({ ...g, count: g.plans.length, label: `${g.plans.length} ${g.label}` }));
+	const decisions = [...groups.values()].map((g) => ({ ...g, count: g.plans.length, label: counted(g.plans.length, g.label) }));
 	return { decisions, headline: headline(t, decisions.length) };
 }
 

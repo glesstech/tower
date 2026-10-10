@@ -1,7 +1,8 @@
 // @ts-check
 // The home page at /: what tower is, how to connect an agent, and the trunks from GET /repos
 // (every trunk with the operator ?key=, otherwise only the public demo trunk, which needs
-// no key to watch). Each trunk links to its Live, Plans and Code pages.
+// no key to watch). Each trunk links to its Live, Plans, Code and Inbox pages, and shows how
+// many changes wait there for a human.
 
 import { $, KEY, el, nav, withKey } from "./client.js";
 
@@ -9,7 +10,7 @@ import { $, KEY, el, nav, withKey } from "./client.js";
 const VIDEO = "";
 
 /**
- * @typedef {{ in_flight: number, holding: number, landed: number, conflicts_prevented: number }} Counts
+ * @typedef {{ in_flight: number, holding: number, review: number, landed: number, conflicts_prevented: number }} Counts
  * @typedef {{ repo: string, counts: Counts | null }} Trunk
  */
 
@@ -39,11 +40,13 @@ function table(trunks) {
 	for (const { repo, counts } of trunks) {
 		const tr = el("tr");
 		tr.appendChild(el("td", "", repo));
-		for (const k of /** @type {const} */ (["in_flight", "holding", "landed", "conflicts_prevented"])) {
-			tr.appendChild(el("td", "n", counts ? String(counts[k]) : "–"));
+		for (const k of /** @type {const} */ (["in_flight", "holding", "review", "landed", "conflicts_prevented"])) {
+			// A trunk with changes waiting for a human stands out.
+			const n = counts ? counts[k] : null;
+			tr.appendChild(el("td", k === "review" && n ? "n waiting" : "n", n == null ? "–" : String(n)));
 		}
 		const go = el("td", "go");
-		for (const [label, name] of [["Live", "dashboard"], ["Plans", "plans"], ["Code", "code"]]) {
+		for (const [label, name] of [["Live", "dashboard"], ["Plans", "plans"], ["Code", "code"], ["Inbox", "inbox"]]) {
 			link(go, label, withKey(page(repo, name))).classList.add("button");
 		}
 		tr.appendChild(go);
