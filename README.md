@@ -163,6 +163,26 @@ The sim's agents always pass their checks and only touch module files, so every 
 TOWER_API_KEY=... npm run sim -- --repo review-demo --seed --keep --review 3
 ```
 
+### Demo: plain Git, tower, and real agents
+
+`--plain` runs the same workload (same `--agents`, `--modules`, `--zipf`, `--rng`, `--stagger` and `--think`) against a local bare repo with no tower, and needs no key. Each agent does what an uncoordinated agent does on a shared repo: clone, edit, commit, push. A rejected push pulls with rebase, and a rebase that conflicts is thrown away and the edit redone on the new trunk. The run reports `rejectedPushes` and `mergeConflicts` (each conflict is an edit redone), then checks the content the same way as `--seed`. Everyone gets there in the end, but every conflict is work done twice. On tower the same workload reports `conflictsPrevented` instead, because agents wait for their claim. 8 agents over 4 modules gave 11 merge conflicts and 28 rejected pushes, and 30 agents gave 152 and 298. `--keep` keeps the bare repo and prints its path. `--think <s>` makes each agent spend about that long on its edit after cloning, in both modes. Real agents take minutes, and that is what makes uncoordinated agents collide. With starts spread out and no think time, local pushes are too fast to overlap, so plain Git shows no conflicts. For a side-by-side, run the same workload both ways, changing only `--plain` for `--seed`:
+
+```sh
+node sim/agents.mjs --plain --agents 30 --modules 4 --stagger 30 --think 20 --quiet
+TOWER_API_KEY=... npm run sim -- --seed --repo contrast --agents 30 --modules 4 --stagger 30 --think 20 --quiet
+```
+
+Measured on `tower-dev` (2026-10-09): plain Git hit 139 merge conflicts, so 30 agents made 169 edits, and it took 334 s. Tower prevented 25 conflicts, made 30 edits, and took 426 s with 0 conflicts on trunk. Tower is slower on the clock here because 16 of the 30 agents claimed `m0` and waited in line for it (holding p95 349 s). What it saves is the redone work, not time. Symbol-level claims (#10) would let agents on one file run in parallel.
+
+The seed commit is a small Worker app: `package.json`, `wrangler.jsonc` (named `tower-demo-<repo>`), one `src/modules/m<k>.ts` per module, and `src/index.ts`, which serves a page listing the agents in each module. To watch it fill in, run the sim with `--keep` once, then connect the trunk in the Cloudflare dashboard under **Workers & Pages > Create application > Continue with Artifacts**, picking the tower namespace and the trunk repo, with `main` as the production branch. Every later land redeploys the page. Forks are separate repos, not branches of trunk, so Workers Builds preview URLs don't apply to them.
+
+`--llm "<task>"` (repeatable) mixes real agents into a tower run. After seeding, the sim starts `swarm/swarm.mjs --agent claude` with one Claude Code agent per task on the same trunk, then starts the scripted agents. The agents run on the swarm's cheap model (`--cheap`) unless `--model` names one. Swarm output is prefixed `llm`, and the agents' own logs go to `swarm-logs/`. The sim waits for the swarm before it reports, verifies and tears down. It reports how many real agents landed as `llmLanded`, and the swarm's exit code as `llmExit`, failing if that is nonzero. Ctrl-C stops the swarm and its agents and still tears down, and a second Ctrl-C exits at once. Real agents take minutes, so spread the scripted agents with `--stagger` over a few minutes to have both in flight together. A task that edits a hot module (`m0`) makes tower hold scripted agents behind a real one.
+
+```sh
+TOWER_URL=https://tower-dev.<subdomain>.workers.dev TOWER_API_KEY=... npm run sim -- --repo demo --seed \
+	--agents 20 --modules 4 --stagger 240 --llm "Add a GET /health route to src/index.ts that returns ok"
+```
+
 Tests:
 
 ```sh
