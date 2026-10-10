@@ -191,12 +191,19 @@ export class FakeArtifacts implements Artifacts {
 		throw new Error("FakeArtifacts.import is not implemented");
 	}
 
-	async list(): Promise<ArtifactsRepoListResult> {
-		const repos = await Promise.all([...this.repos.values()].map(async (r) => {
+	// Paged like Artifacts: `limit` (default 50, at most 200) repos per page, and a cursor
+	// while more remain.
+	async list(opts: { limit?: number; cursor?: string } = {}): Promise<ArtifactsRepoListResult> {
+		this.hit("list");
+		const limit = Math.min(opts.limit ?? 50, 200);
+		const start = Number(opts.cursor ?? 0);
+		const all = [...this.repos.values()];
+		const repos = await Promise.all(all.slice(start, start + limit).map(async (r) => {
 			const { remote: _, ...info } = await r.info();
 			return info;
 		}));
-		return { repos, total: repos.length };
+		const next = start + limit;
+		return { repos, total: all.length, ...(next < all.length ? { cursor: String(next) } : {}) };
 	}
 
 	async delete(name: string): Promise<boolean> {
