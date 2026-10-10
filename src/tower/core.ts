@@ -235,13 +235,29 @@ export async function branch(t: Core): Promise<string> {
 	return defaultBranch;
 }
 
-// Cleanup is best-effort: a failed delete must never fail the land or release around it.
+// Cleanup is best-effort: a failed delete must never fail the land or release around it. A
+// fork it can't delete keeps its plan row, so teardown (see trunk.ts) tries it again.
 export async function deleteRepo(t: Core, name: string): Promise<boolean> {
 	try {
-		return await t.env.ARTIFACTS.delete(name);
+		return await removeRepo(t, name);
 	} catch (err) {
-		if ((err as ArtifactsError).code !== "NOT_FOUND") console.error(`delete ${name}:`, err);
+		console.error(`delete ${name}:`, err);
 		return false;
+	}
+}
+
+// Delete a repo, retrying failures that may pass (load, upstream errors). True if this call
+// deleted it, false if it was already gone; throws the last error if it couldn't be deleted.
+export async function removeRepo(t: Core, name: string, attempts = 3): Promise<boolean> {
+	for (let i = 1; ; i++) {
+		try {
+			return await t.env.ARTIFACTS.delete(name);
+		} catch (err) {
+			const code = (err as ArtifactsError).code;
+			if (code === "NOT_FOUND") return false;
+			if (i >= attempts || code === "INVALID_REPO_NAME") throw err;
+			await new Promise((r) => setTimeout(r, 100 * i));
+		}
 	}
 }
 

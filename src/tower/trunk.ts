@@ -2,12 +2,14 @@
 // file contents.
 
 import type { Change } from "../treediff";
-import { branch, type Core, deleteRepo, repo, serial, setMeta } from "./core";
+import { branch, type Core, removeRepo, repo, serial, setMeta } from "./core";
 import { reset } from "./events";
 import { schema } from "./schema";
 
 const TREE_LIMIT = 5000;
 const BLOB_LIMIT = 1024 * 1024;
+// Deletes in flight at once during teardown, rather than one per fork (hundreds after a scale run).
+const DELETE_CONCURRENCY = 8;
 
 export async function init(t: Core, importUrl?: string) {
 	const name = repo(t);
@@ -38,21 +40,53 @@ export async function readToken(t: Core) {
 	return { remote: info.remote, token: token.plaintext, expiresAt: token.expiresAt };
 }
 
-// Tear down a trunk completely: every fork, the trunk repo, and this Tower's own state.
+// Tear down a trunk completely: every fork, the trunk repo, and this Tower's own state. Forks
+// are found from plan rows and also by name in the namespace (`<trunk>--<plan id>`), so a fork
+// whose row was never written goes too. Deletes run a few at a time and are retried; any that
+// still fail come back in `failed`. A failed fork is still in the namespace, so the next DELETE
+// (which sets the repo again from its header) finds and deletes it.
 export async function destroy(t: Core) {
 	return serial(t, async () => {
-		const forks = t.sql
+		const name = repo(t);
+		const rows = t.sql
 			.exec<{ fork: string }>("SELECT fork FROM plans WHERE fork IS NOT NULL")
 			.toArray()
 			.map((r) => r.fork);
-		const repos = [...forks, repo(t)];
-		const deleted = (await Promise.all(repos.map((name) => deleteRepo(t, name)))).filter(Boolean).length;
+		const repos = [...new Set([...rows, ...(await forksOf(t, name))]), name];
+		let deleted = 0;
+		const failed: string[] = [];
+		const queue = [...repos];
+		const worker = async () => {
+			for (let r = queue.shift(); r !== undefined; r = queue.shift()) {
+				try {
+					if (await removeRepo(t, r)) deleted++;
+				} catch (err) {
+					console.error(`teardown: delete ${r}:`, err);
+					failed.push(r);
+				}
+			}
+		};
+		await Promise.all(Array.from({ length: DELETE_CONCURRENCY }, worker));
 		reset(t);
 		await t.ctx.storage.deleteAll();
 		t.workspace = null;
 		schema(t.sql);
-		return { deleted };
+		return failed.length ? { deleted, failed: failed.sort() } : { deleted };
 	});
+}
+
+// Every fork of `trunk` in the namespace, by name. Only `<trunk>--<8 hex>` (a plan id) matches,
+// so forks of another trunk whose name merely starts with `<trunk>--` are left alone.
+async function forksOf(t: Core, trunk: string): Promise<string[]> {
+	const pattern = new RegExp(`^${trunk.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}--[0-9a-f]{8}$`);
+	const names: string[] = [];
+	let cursor: string | undefined;
+	do {
+		const page = await t.env.ARTIFACTS.list({ limit: 200, cursor });
+		names.push(...page.repos.map((r) => r.name).filter((n) => pattern.test(n)));
+		cursor = page.cursor;
+	} while (cursor);
+	return names;
 }
 
 // Every file path on trunk HEAD, for the dashboard's codebase map. Walking the tree costs
