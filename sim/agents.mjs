@@ -21,10 +21,11 @@
 //   TOWER_API_KEY=... node sim/agents.mjs --repo scale --seed --agents 500 --modules 50 --stagger 120
 //   TOWER_API_KEY=... node sim/agents.mjs --repo review-demo --seed --keep --review 3
 
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 import { parseArgs, promisify } from "node:util";
 
 const run = promisify(execFile);
@@ -45,11 +46,14 @@ const { values: args } = parseArgs({
 		seed: { type: "boolean", default: false },
 		keep: { type: "boolean", default: false },
 		plain: { type: "boolean", default: false },
+		llm: { type: "string", multiple: true, default: [] },
+		model: { type: "string" },
 	},
 });
 const BASE = process.env.TOWER_URL ?? "http://localhost:8787";
 const KEY = process.env.TOWER_API_KEY;
 if (!KEY && !args.plain) throw new Error("set TOWER_API_KEY");
+if (args.plain && args.llm.length) throw new Error("--llm needs tower; drop --plain");
 const AGENTS = Number(args.agents);
 const MODULES = Number(args.modules);
 const DRIFT = Number(args.drift);
@@ -477,21 +481,61 @@ async function plainRun(work) {
 	if (args.out) await writeFile(args.out, JSON.stringify({ repo: args.repo, savedAt: Date.now(), report }));
 }
 
+// ── real LLM agents ─────────────────────────────────────────────────────────
+
+// The swarm starts one Claude Code agent per --llm task on this trunk; the sim only waits for it.
+let llm = null;
+function startLlm() {
+	const swarm = new URL("../swarm/swarm.mjs", import.meta.url).pathname;
+	const argv = [swarm, "--repo", args.repo, "--agent", "claude", ...args.llm.flatMap((t) => ["--task", t]), ...(args.model ? ["--model", args.model] : [])];
+	log("llm", `starting ${args.llm.length} agent(s): swarm ${argv.slice(1).join(" ")}`);
+	// Its own process group, so stopping the sim can stop the swarm and the agents it started.
+	const child = spawn(process.execPath, argv, { env: { ...process.env, TOWER_URL: BASE, TOWER_API_KEY: KEY }, stdio: ["ignore", "pipe", "pipe"], detached: true });
+	for (const stream of [child.stdout, child.stderr]) createInterface({ input: stream }).on("line", (line) => console.log(`llm ${line}`));
+	const exit = new Promise((r) => (child.on("error", (err) => (console.error(err), r(-1))), child.on("close", (code) => r(code ?? -1))));
+	llm = { child, exit };
+}
+
+// The swarm starts each agent in a process group of its own, so killing the swarm's group alone
+// would leave the agents running: kill every descendant's group, deepest first.
+async function stopLlm() {
+	if (!llm || llm.child.exitCode !== null) return;
+	const { stdout } = await run("ps", ["-A", "-o", "pid=,ppid="]).catch(() => ({ stdout: "" }));
+	const kids = new Map();
+	for (const [pid, ppid] of stdout.trim().split("\n").map((l) => l.trim().split(/\s+/).map(Number))) kids.set(ppid, [...(kids.get(ppid) ?? []), pid]);
+	const tree = [];
+	const walk = (pid) => (tree.unshift(pid), (kids.get(pid) ?? []).forEach(walk));
+	walk(llm.child.pid);
+	for (const pid of tree) {
+		try {
+			process.kill(-pid, "SIGTERM");
+		} catch {}
+	}
+	await llm.exit;
+}
+
 async function towerRun(work) {
 	if (args.seed) {
 		seeded = true; // init may have created trunk even if seeding fails after it
 		await seed(work);
 	}
+	if (args.llm.length) startLlm();
 	// Review agents pick no module (null); the rest keep the choices --rng gives them.
 	const assigned = modulesFor(AGENTS).map((m, i) => (reviewer(i) ? null : m));
 	const startedAt = Date.now();
 	const results = await Promise.allSettled(assigned.map((m, i) => agent(i, m, work)));
 	const endedAt = Date.now();
 	for (const r of results) if (r.status === "rejected") (failed++, console.error(r.reason));
+	if (llm) log("llm", "scripted agents done; waiting for the LLM agents");
+	const llmExit = llm ? await llm.exit : null;
 
 	const [{ body: state }, events] = await Promise.all([api("GET", "/state"), eventLog()]);
 	const report = metrics(events, state.stats, startedAt, endedAt);
 	report.failed = failed;
+	if (llm) {
+		report.llmExit = llmExit;
+		if (llmExit !== 0) failed++;
+	}
 	if (args.seed) {
 		const { body: read } = await api("POST", "/token");
 		const problems = await verify(work, assigned, report.landed, read.remote, read.token);
@@ -516,17 +560,31 @@ async function towerRun(work) {
 const work = await mkdtemp(join(tmpdir(), "tower-sim-"));
 let failed = 0;
 let seeded = false;
+let cleaning = null;
+const cleanup = () =>
+	(cleaning ??= (async () => {
+		await stopLlm();
+		if (seeded && !args.keep) {
+			const { body: gone } = await api("DELETE", "", undefined, true).catch((err) => ({ body: { deleted: `none (${err.message})` } }));
+			console.log(`cleanup: deleted ${gone.deleted} repos and reset the tower`);
+		}
+		if (args.plain && args.keep) console.log(`kept the plain repo: git clone ${join(work, "plain.git")}`);
+		else await rm(work, { recursive: true, force: true });
+	})());
+// Ctrl-C stops the LLM agents and still tears down; a second Ctrl-C exits at once.
+for (const sig of ["SIGINT", "SIGTERM"]) {
+	process.on(sig, () => {
+		if (cleaning) process.exit(130);
+		console.error(`\n${sig}: stopping agents and cleaning up`);
+		cleanup().finally(() => process.exit(130));
+	});
+}
 try {
 	await (args.plain ? plainRun(work) : towerRun(work));
 } catch (err) {
 	failed++;
 	console.error(err);
 } finally {
-	if (seeded && !args.keep) {
-		const { body: gone } = await api("DELETE", "", undefined, true).catch((err) => ({ body: { deleted: `none (${err.message})` } }));
-		console.log(`cleanup: deleted ${gone.deleted} repos and reset the tower`);
-	}
-	if (args.plain && args.keep) console.log(`kept the plain repo: git clone ${join(work, "plain.git")}`);
-	else await rm(work, { recursive: true, force: true });
+	await cleanup();
 }
 if (failed) process.exit(1);
