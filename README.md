@@ -183,6 +183,18 @@ TOWER_URL=https://tower-dev.<subdomain>.workers.dev TOWER_API_KEY=... npm run si
 	--agents 20 --modules 4 --stagger 240 --llm "Add a GET /health route to src/index.ts that returns ok"
 ```
 
+### Demo video
+
+`npm run demo` builds the submission video (#51) at `scripts/demo/out/tower-demo.mp4` from the runs saved in `scripts/demo/runs/` and the demo trunks they kept on `tower-dev`. Nobody records a screen or a voice. `scripts/demo/build.mjs` holds each scene's narration, minimum length and page. Playwright records each page in headless Chrome (`record.mjs`), with terminal and title scenes drawn by `terminal.html` and `card.html`, and dashboard scenes replaying a saved run with **Load log** at whatever speed fills the scene. Narration comes from Kokoro, a local neural TTS model (`tts.py`, run through `uv`), and its sentences become the captions. ffmpeg joins the scenes and normalizes the loudness. A file at `scripts/demo/voice/<scene>.m4a` replaces that scene's synthesized narration, and `TTS=say` uses macOS `say` instead of Kokoro.
+
+```sh
+npx playwright-core install chromium ffmpeg       # once
+(set -a; . ./.dev.vars; npm run demo)             # every scene
+(set -a; . ./.dev.vars; npm run demo -- 03 06)    # rerecord some scenes, then rejoin
+```
+
+The review scene approves a change in the inbox, so seed a fresh review trunk before rerecording it. The header of `build.mjs` lists each scene's inputs.
+
 Tests:
 
 ```sh

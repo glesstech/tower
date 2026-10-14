@@ -1,0 +1,60 @@
+<!doctype html>
+<!-- A terminal for the demo video's command scenes. build.mjs calls play() with the lines to
+     type: a command (starts with "$ ") types character by character, output lines appear one
+     at a time, and a line starting with "!" is highlighted. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>terminal</title>
+<style>
+	html, body { margin: 0; height: 100%; background: #0d1117; }
+	.win { position: absolute; inset: 28px 40px 96px; background: #161b22; border: 1px solid #30363d; border-radius: 10px; overflow: hidden; }
+	.bar { height: 30px; background: #21262d; display: flex; align-items: center; gap: 8px; padding: 0 12px; }
+	.bar i { width: 12px; height: 12px; border-radius: 50%; background: #484f58; }
+	.bar i:nth-child(1) { background: #ff5f57; } .bar i:nth-child(2) { background: #febc2e; } .bar i:nth-child(3) { background: #28c840; }
+	.bar span { color: #8b949e; font: 13px system-ui, sans-serif; margin-left: 8px; }
+	pre { margin: 0; padding: 16px 20px; color: #c9d1d9; font: 17px/1.5 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-word; height: calc(100% - 62px); overflow: hidden; }
+	.cmd { color: #7ee787; }
+	.hi { color: #ffa657; font-weight: 600; }
+	.dim { color: #6e7681; }
+	.cursor { display: inline-block; width: 9px; height: 1.1em; background: #c9d1d9; vertical-align: text-bottom; animation: blink 1s steps(1) infinite; }
+	@keyframes blink { 50% { opacity: 0; } }
+</style>
+</head>
+<body>
+<div class="win"><div class="bar"><i></i><i></i><i></i><span id="title">zsh</span></div><pre id="out"><span class="cursor"></span></pre></div>
+<script>
+	const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+	const out = document.getElementById("out");
+	const cursor = out.lastElementChild;
+	function line(cls) {
+		const span = document.createElement("span");
+		if (cls) span.className = cls;
+		out.insertBefore(span, cursor);
+		return span;
+	}
+	/** Types `lines` over `seconds`: commands type quickly, output lines share the rest evenly. */
+	window.play = async ({ lines, seconds, title }) => {
+		if (title) document.getElementById("title").textContent = title;
+		const typed = lines.filter((l) => l.startsWith("$ ")).reduce((n, l) => n + l.length, 0);
+		const commands = lines.filter((l) => l.startsWith("$ ")).length;
+		const budget = seconds * 1000 - commands * 500;
+		const perChar = Math.min(30, (budget * 0.15) / Math.max(1, typed));
+		const perLine = (budget - perChar * typed) / Math.max(1, lines.length - commands);
+		for (const text of lines) {
+			if (text.startsWith("$ ")) {
+				const span = line("cmd");
+				for (const ch of text) { span.textContent += ch; await sleep(perChar); }
+				span.textContent += "\n";
+				await sleep(500);
+			} else {
+				const hi = text.startsWith("!");
+				line(hi ? "hi" : text.startsWith("#") ? "dim" : "").textContent = (hi ? text.slice(1) : text) + "\n";
+				out.scrollTop = out.scrollHeight;
+				await sleep(perLine);
+			}
+		}
+	};
+</script>
+</body>
+</html>

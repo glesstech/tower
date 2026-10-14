@@ -1,0 +1,182 @@
+02:07:33.837 agent-0   pushed src/modules/m0.ts
+02:07:38.470 agent-6   CONFLICT in src/modules/m0.ts, redoing the edit
+02:07:39.556 agent-4   CONFLICT in src/modules/m0.ts, redoing the edit
+02:07:40.541 agent-1   pushed src/modules/m1.ts on try 2
+02:07:40.812 agent-3   pushed src/modules/m2.ts on try 2
+02:07:43.558 agent-2   CONFLICT in src/modules/m2.ts, redoing the edit
+02:07:44.186 agent-5   CONFLICT in src/modules/m0.ts, redoing the edit
+02:07:45.345 agent-8   pushed src/modules/m3.ts on try 2
+02:07:45.779 agent-12  CONFLICT in src/modules/m3.ts, redoing the edit
+02:07:46.076 agent-7   CONFLICT in src/modules/m0.ts, redoing the edit
+02:07:46.318 agent-13  CONFLICT in src/modules/m0.ts, redoing the edit
+02:07:47.535 agent-11  CONFLICT in src/modules/m2.ts, redoing the edit
+02:07:49.772 agent-9   CONFLICT in src/modules/m0.ts, redoing the edit
+02:07:50.202 agent-16  CONFLICT in src/modules/m2.ts, redoing the edit
+02:07:50.970 agent-10  CONFLICT in src/modules/m3.ts, redoing the edit
+02:07:51.048 agent-14  CONFLICT in src/modules/m0.ts, redoing the edit
+02:07:52.478 agent-19  CONFLICT in src/modules/m3.ts, redoing the edit
+02:07:54.154 agent-15  CONFLICT in src/modules/m3.ts, redoing the edit
+02:07:55.070 agent-18  pushed src/modules/m0.ts on try 2
+02:07:56.660 agent-6   CONFLICT in src/modules/m0.ts, redoing the edit
+02:07:57.870 agent-4   CONFLICT in src/modules/m0.ts, redoing the edit
+02:07:58.760 agent-17  CONFLICT in src/modules/m0.ts, redoing the edit
+02:07:59.486 agent-23  CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:00.734 agent-20  CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:00.939 agent-21  CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:00.965 agent-26  pushed src/modules/m2.ts on try 2
+02:08:01.278 agent-5   CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:01.333 agent-22  CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:01.959 agent-24  CONFLICT in src/modules/m2.ts, redoing the edit
+02:08:02.162 agent-12  pushed src/modules/m3.ts on try 3
+02:08:03.791 agent-2   CONFLICT in src/modules/m2.ts, redoing the edit
+02:08:04.384 agent-27  CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:05.377 agent-25  CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:06.560 agent-29  pushed src/modules/m1.ts on try 2
+02:08:08.128 agent-11  CONFLICT in src/modules/m2.ts, redoing the edit
+02:08:08.186 agent-9   CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:09.075 agent-28  CONFLICT in src/modules/m2.ts, redoing the edit
+02:08:10.021 agent-13  CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:10.518 agent-7   CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:10.748 agent-15  CONFLICT in src/modules/m3.ts, redoing the edit
+02:08:10.855 agent-10  CONFLICT in src/modules/m3.ts, redoing the edit
+02:08:10.945 agent-19  CONFLICT in src/modules/m3.ts, redoing the edit
+02:08:12.236 agent-16  CONFLICT in src/modules/m2.ts, redoing the edit
+02:08:13.608 agent-14  CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:16.244 agent-17  pushed src/modules/m0.ts on try 3
+02:08:16.714 agent-22  CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:17.223 agent-6   CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:17.917 agent-20  CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:18.155 agent-4   CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:18.537 agent-23  CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:19.677 agent-27  CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:22.731 agent-2   pushed src/modules/m2.ts on try 4
+02:08:23.602 agent-5   CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:23.851 agent-25  CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:25.558 agent-21  CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:25.703 agent-24  CONFLICT in src/modules/m2.ts, redoing the edit
+02:08:26.517 agent-19  pushed src/modules/m3.ts on try 4
+02:08:26.578 agent-13  CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:26.843 agent-28  CONFLICT in src/modules/m2.ts, redoing the edit
+02:08:27.163 agent-9   CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:27.546 agent-11  CONFLICT in src/modules/m2.ts, redoing the edit
+02:08:31.825 agent-7   CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:31.868 agent-16  CONFLICT in src/modules/m2.ts, redoing the edit
+02:08:32.128 agent-10  CONFLICT in src/modules/m3.ts, redoing the edit
+02:08:32.234 agent-15  CONFLICT in src/modules/m3.ts, redoing the edit
+02:08:35.475 agent-14  CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:36.263 agent-4   pushed src/modules/m0.ts on try 5
+02:08:36.347 agent-20  CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:36.948 agent-23  CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:38.384 agent-22  CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:39.227 agent-5   CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:41.953 agent-6   CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:43.208 agent-27  CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:46.497 agent-24  pushed src/modules/m2.ts on try 4
+02:08:46.610 agent-11  CONFLICT in src/modules/m2.ts, redoing the edit
+02:08:46.784 agent-21  CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:47.393 agent-25  CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:48.086 agent-28  CONFLICT in src/modules/m2.ts, redoing the edit
+02:08:49.158 agent-13  CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:51.198 agent-9   CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:51.254 agent-10  pushed src/modules/m3.ts on try 5
+02:08:51.355 agent-15  CONFLICT in src/modules/m3.ts, redoing the edit
+02:08:51.645 agent-16  CONFLICT in src/modules/m2.ts, redoing the edit
+02:08:52.100 agent-7   CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:54.152 agent-23  pushed src/modules/m0.ts on try 5
+02:08:57.378 agent-5   CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:57.390 agent-6   CONFLICT in src/modules/m0.ts, redoing the edit
+02:08:58.442 agent-14  CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:00.420 agent-20  CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:01.648 agent-22  CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:02.605 agent-25  CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:03.019 agent-27  CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:05.519 agent-13  CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:06.144 agent-11  pushed src/modules/m2.ts on try 6
+02:09:06.795 agent-16  CONFLICT in src/modules/m2.ts, redoing the edit
+02:09:09.985 agent-28  CONFLICT in src/modules/m2.ts, redoing the edit
+02:09:10.852 agent-15  pushed src/modules/m3.ts on try 7
+02:09:11.397 agent-21  CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:13.254 agent-7   CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:14.729 agent-9   CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:15.321 agent-14  pushed src/modules/m0.ts on try 6
+02:09:16.008 agent-5   CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:17.599 agent-6   CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:20.349 agent-25  CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:20.673 agent-27  CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:21.982 agent-13  CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:24.958 agent-22  CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:25.168 agent-20  CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:25.427 agent-28  pushed src/modules/m2.ts on try 6
+02:09:25.757 agent-16  CONFLICT in src/modules/m2.ts, redoing the edit
+02:09:28.208 agent-21  CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:28.796 agent-7   CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:31.926 agent-5   pushed src/modules/m0.ts on try 8
+02:09:36.276 agent-9   CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:36.400 agent-6   CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:36.828 agent-25  CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:38.233 agent-27  CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:40.032 agent-13  CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:45.656 agent-16  pushed src/modules/m2.ts on try 8
+02:09:48.938 agent-20  CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:49.195 agent-7   CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:50.011 agent-22  CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:50.212 agent-21  CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:55.350 agent-6   pushed src/modules/m0.ts on try 9
+02:09:56.051 agent-25  CONFLICT in src/modules/m0.ts, redoing the edit
+02:09:58.560 agent-27  CONFLICT in src/modules/m0.ts, redoing the edit
+02:10:00.525 agent-9   CONFLICT in src/modules/m0.ts, redoing the edit
+02:10:03.909 agent-13  CONFLICT in src/modules/m0.ts, redoing the edit
+02:10:06.951 agent-22  CONFLICT in src/modules/m0.ts, redoing the edit
+02:10:08.837 agent-21  CONFLICT in src/modules/m0.ts, redoing the edit
+02:10:13.469 agent-20  CONFLICT in src/modules/m0.ts, redoing the edit
+02:10:14.084 agent-7   CONFLICT in src/modules/m0.ts, redoing the edit
+02:10:15.952 agent-25  pushed src/modules/m0.ts on try 8
+02:10:21.176 agent-9   CONFLICT in src/modules/m0.ts, redoing the edit
+02:10:21.723 agent-27  CONFLICT in src/modules/m0.ts, redoing the edit
+02:10:22.713 agent-13  CONFLICT in src/modules/m0.ts, redoing the edit
+02:10:26.954 agent-21  CONFLICT in src/modules/m0.ts, redoing the edit
+02:10:28.555 agent-22  CONFLICT in src/modules/m0.ts, redoing the edit
+02:10:33.949 agent-20  CONFLICT in src/modules/m0.ts, redoing the edit
+02:10:38.113 agent-7   CONFLICT in src/modules/m0.ts, redoing the edit
+02:10:42.806 agent-9   pushed src/modules/m0.ts on try 9
+02:10:44.271 agent-22  CONFLICT in src/modules/m0.ts, redoing the edit
+02:10:44.341 agent-21  CONFLICT in src/modules/m0.ts, redoing the edit
+02:10:46.774 agent-27  CONFLICT in src/modules/m0.ts, redoing the edit
+02:10:47.635 agent-13  CONFLICT in src/modules/m0.ts, redoing the edit
+02:10:54.332 agent-20  CONFLICT in src/modules/m0.ts, redoing the edit
+02:10:55.445 agent-7   CONFLICT in src/modules/m0.ts, redoing the edit
+02:11:01.970 agent-21  pushed src/modules/m0.ts on try 10
+02:11:02.516 agent-27  CONFLICT in src/modules/m0.ts, redoing the edit
+02:11:07.073 agent-13  CONFLICT in src/modules/m0.ts, redoing the edit
+02:11:08.527 agent-22  CONFLICT in src/modules/m0.ts, redoing the edit
+02:11:13.692 agent-7   CONFLICT in src/modules/m0.ts, redoing the edit
+02:11:17.571 agent-20  CONFLICT in src/modules/m0.ts, redoing the edit
+02:11:22.692 agent-27  pushed src/modules/m0.ts on try 11
+02:11:26.258 agent-13  CONFLICT in src/modules/m0.ts, redoing the edit
+02:11:30.407 agent-22  CONFLICT in src/modules/m0.ts, redoing the edit
+02:11:36.761 agent-7   CONFLICT in src/modules/m0.ts, redoing the edit
+02:11:42.393 agent-20  CONFLICT in src/modules/m0.ts, redoing the edit
+02:11:42.524 agent-13  pushed src/modules/m0.ts on try 13
+02:11:47.000 agent-22  CONFLICT in src/modules/m0.ts, redoing the edit
+02:11:52.925 agent-7   CONFLICT in src/modules/m0.ts, redoing the edit
+02:12:07.404 agent-20  CONFLICT in src/modules/m0.ts, redoing the edit
+02:12:07.909 agent-22  pushed src/modules/m0.ts on try 13
+02:12:14.029 agent-7   CONFLICT in src/modules/m0.ts, redoing the edit
+02:12:25.940 agent-20  CONFLICT in src/modules/m0.ts, redoing the edit
+02:12:32.437 agent-7   pushed src/modules/m0.ts on try 15
+02:12:48.693 agent-20  CONFLICT in src/modules/m0.ts, redoing the edit
+02:13:08.018 agent-20  pushed src/modules/m0.ts on try 15
+
+plain git
+  mode               plain git (no tower)
+  agents             30
+  modules            4
+  zipf               1
+  durationSec        352
+  pushed             30
+  rejectedPushes     160
+  mergeConflicts     138
+  failed             0
+  contentProblems    0
+
+The same workload on tower (drop --plain, add --seed) reports conflictsPrevented: agents wait for their claim instead of colliding.
