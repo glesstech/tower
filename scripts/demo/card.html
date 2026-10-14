@@ -1,0 +1,48 @@
+<!doctype html>
+<!-- Title and numbers cards for the demo video. build.mjs calls show() with a heading, an
+     optional subheading, and optional stats ([value, label] pairs) that appear one by one. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>card</title>
+<style>
+	html, body { margin: 0; height: 100%; background: radial-gradient(ellipse at 30% 20%, #1c2333, #0d1117 70%); color: #e6edf3; font-family: system-ui, -apple-system, sans-serif; }
+	main { position: absolute; inset: 0 0 80px; display: flex; flex-direction: column; justify-content: center; padding: 0 110px; }
+	.kicker { color: #f6821f; font: 600 20px system-ui; letter-spacing: .14em; text-transform: uppercase; margin-bottom: 18px; }
+	h1 { font-size: 64px; line-height: 1.08; margin: 0; font-weight: 700; letter-spacing: -.02em; }
+	p { font-size: 28px; color: #9da7b3; margin: 22px 0 0; max-width: 900px; line-height: 1.35; }
+	.stats { display: flex; gap: 56px; margin-top: 46px; flex-wrap: wrap; }
+	.stat { opacity: 0; transform: translateY(12px); transition: opacity .6s, transform .6s; }
+	.stat.on { opacity: 1; transform: none; }
+	.stat b { display: block; font-size: 58px; font-weight: 700; color: #fff; }
+	.stat span { font-size: 19px; color: #9da7b3; }
+	.fade { animation: in .9s ease-out both; }
+	@keyframes in { from { opacity: 0; transform: translateY(10px); } }
+</style>
+</head>
+<body>
+<main id="main"></main>
+<script>
+	const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+	window.show = async ({ kicker, title, sub, stats = [], gap = 1500 }) => {
+		const main = document.getElementById("main");
+		main.innerHTML = "";
+		const add = (tag, cls, text) => { const n = document.createElement(tag); n.className = cls; n.textContent = text; main.appendChild(n); return n; };
+		if (kicker) add("div", "kicker fade", kicker);
+		add("h1", "fade", title);
+		if (sub) add("p", "fade", sub);
+		const row = add("div", "stats", "");
+		for (const [value, label] of stats) {
+			const s = document.createElement("div");
+			s.className = "stat";
+			s.innerHTML = "<b></b><span></span>";
+			s.firstChild.textContent = value;
+			s.lastChild.textContent = label;
+			row.appendChild(s);
+		}
+		await sleep(900);
+		for (const s of row.children) { s.classList.add("on"); await sleep(gap); }
+	};
+</script>
+</body>
+</html>
